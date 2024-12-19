@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="highlighted_subtitle">#80FFEB3B</color>
+    <color name="selected_subtitle">#80ADD8E6</color>
+</resources>
