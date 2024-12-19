@@ -417,7 +417,7 @@ public class MainActivity extends AppCompatActivity implements ActionMode.Callba
                                 "android.permission.WRITE_EXTERNAL_STORAGE")) {
                             new MaterialAlertDialogBuilder(MainActivity.this)
                                     .setTitle(getString(R.string.app_name) + " needs permission")
-                                    .setMessage("This app requires WRITE_EXTERNAL_STORAGE permission to save the image to permanent storage")
+                                    .setMessage("This app requires WRITE_EXTERNAL_STORAGE permission to save the file to permanent storage")
                                     .setPositiveButton("Give Permission", new DialogInterface.OnClickListener() {
                                         @Override
                                         public void onClick(DialogInterface dialog, int which) {
