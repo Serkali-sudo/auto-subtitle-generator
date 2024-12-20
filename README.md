@@ -23,3 +23,4 @@ A simple Android app that automatically generates subtitles from videos locally 
 # Used Projects
 * [Vosk Speech Recognizer](https://github.com/alphacep/vosk-api)
 * [FFmpeg](https://github.com/arthenica/ffmpeg-kit/tree/main/android)
+* [Media](https://developer.android.com/jetpack/androidx/releases/media3)
