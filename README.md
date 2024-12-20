@@ -5,7 +5,7 @@ A simple Android app that automatically generates subtitles from videos locally 
 ![auto_sub_icon2](https://github.com/user-attachments/assets/8d2f8631-a595-49ec-92ec-9b60a72e73cf)
 
 # Features
-* Generate subtitles automatically from videos without any internet.
+* Generate subtitles automatically from videos and it works offline
 * Edit, Merge, Delete subtitles in preview mode
 * Export subtitles as .srt or .vtt
 * Export the video with generated soft or hard subtitles:
