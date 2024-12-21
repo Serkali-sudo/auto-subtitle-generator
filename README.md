@@ -16,7 +16,8 @@ A simple Android app that automatically generates subtitles from videos locally 
 ![sc2](https://github.com/user-attachments/assets/487aac36-2ab5-4f08-a813-74ce6e4fd12a)
 
 # More
-* Since this app is using a small speech recognizer model, obviously results wont be as good using a large model like whisper-large-v3.
+* Since we have timings for every words i can add a "short video mode" in the future. You know that word by word subtitle in youtube shorts. Maybe something like that.
+* This app is using a small speech recognizer model, obviously results wont be as good using a large model like whisper-large-v3.
 * Even though it often doesnt get all of the words right it definetly gets timings right so using edit function in the app is better than writing the subtitle from scratch.
 * Currently this app only supports english but vosk supports other languages too. You can download models from here: https://alphacephei.com/vosk/models.
 
