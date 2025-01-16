@@ -167,12 +167,6 @@ public class MainActivity extends AppCompatActivity implements ActionMode.Callba
             }
         });
 
-        binding.cancelBT.setOnClickListener(v -> {
-            subtitleGenerator.cancelGeneration();
-            binding.cancelBT.setVisibility(View.GONE);
-            binding.statusTV.setText("Cancelling...");
-        });
-
         player.addListener(new Player.Listener() {
             @Override
             public void onPlaybackStateChanged(int playbackState) {
@@ -206,28 +200,6 @@ public class MainActivity extends AppCompatActivity implements ActionMode.Callba
         Button exportVideoBT = binding.exportVideoBT;
         exportVideoBT.setOnClickListener(v -> exportVideoWithSubtitles());
 
-        subtitleAdapter = new SubtitleAdapter();
-        subtitleAdapter.setOnSubtitleClickListener(this::showEditSubtitleDialog);
-        subtitleAdapter.setOnPlayClickListener(this::seekToTime);
-        subtitleAdapter.setOnDeleteClickListener(this::deleteSubtitle);
-        subtitleAdapter.setOnItemLongClickListener(this::startSelectionMode);
-
-        binding.recyclerView.setLayoutManager(new LinearLayoutManager(this));
-        binding.recyclerView.setAdapter(subtitleAdapter);
-
-        binding.selectVideoBT.setOnClickListener(v -> {
-            pickMedia.launch(new PickVisualMediaRequest.Builder()
-                    .setMediaType(ActivityResultContracts.PickVisualMedia.VideoOnly.INSTANCE)
-                    .build());
-        });
-
-        binding.saveSubtitlesBT.setOnClickListener(v -> {
-            if (subtitleEntries != null && !subtitleEntries.isEmpty()) {
-                saveSubtitles();
-            } else {
-                Toast.makeText(this, "No subtitles to save", Toast.LENGTH_SHORT).show();
-            }
-        });
 
         binding.cancelBT.setOnClickListener(v -> {
             subtitleGenerator.cancelGeneration();

@@ -24,7 +24,7 @@ public class ApplicationPath {
                 return result.getPath();
             } else {
                 File orig_file = Environment.getExternalStoragePublicDirectory(dir);
-                if (result.isDirectory() || result.mkdirs()) {
+                if (orig_file.isDirectory() || orig_file.mkdirs()) {
                     return orig_file.getPath();
                 } else {
                     return lastResort(folderName, context);
@@ -38,7 +38,7 @@ public class ApplicationPath {
                     return result.getPath();
                 } else {
                     File orig_file = Environment.getExternalStoragePublicDirectory(dir);
-                    if (result.isDirectory() || result.mkdirs()) {
+                    if (orig_file.isDirectory() || orig_file.mkdirs()) {
                         return orig_file.getPath();
                     } else {
                         return lastResort(folderName, context);
