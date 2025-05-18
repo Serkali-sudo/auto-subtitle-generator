@@ -26,8 +26,8 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
     }
 }
 
@@ -40,7 +40,8 @@ dependencies {
     implementation 'net.java.dev.jna:jna:5.13.0@aar'
     implementation 'com.alphacephei:vosk-android:0.3.47@aar'
     implementation project(':models')
-    implementation 'com.arthenica:ffmpeg-kit-full:6.0-2'
+    implementation(files("libs/ffmpeg-kit.aar"))
+    implementation 'com.arthenica:smart-exception-java:0.2.1'
     implementation "androidx.media3:media3-exoplayer:1.4.1"
     implementation "androidx.media3:media3-ui:1.4.1"
     testImplementation libs.junit
