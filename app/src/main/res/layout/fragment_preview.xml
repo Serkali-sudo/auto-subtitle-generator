@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/previewScreen"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    android:background="?attr/colorSurface">
+
+    <!-- Fixed Player Frame on Top -->
+    <FrameLayout
+        android:id="@+id/playerFrame"
+        android:layout_width="0dp"
+        android:layout_height="210dp"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <androidx.media3.ui.PlayerView
+            android:id="@+id/playerView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <FrameLayout
+            android:id="@+id/shortsOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="20dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/shortsWordTV"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:background="@drawable/shorts_caption_background"
+                android:gravity="center"
+                android:paddingStart="18dp"
+                android:paddingTop="10dp"
+                android:paddingEnd="18dp"
+                android:paddingBottom="10dp"
+                android:textColor="@color/shorts_caption_text"
+                android:textSize="30sp"
+                android:textStyle="bold"
+                tools:text="caption" />
+        </FrameLayout>
+
+        <ImageButton
+            android:id="@+id/shortsHeightToggleBT"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="8dp"
+            android:background="@drawable/shorts_player_toggle_background"
+            android:contentDescription="Shrink video for subtitle editing"
+            android:padding="8dp"
+            android:scaleType="center"
+            android:src="@drawable/ri_arrow_up_s_line"
+            android:tint="@android:color/white"
+            android:visibility="gone"
+            tools:ignore="UseAppTint" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/fallbackWarningLayout"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="#FFF3CD"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:gravity="center_vertical"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/playerFrame">
+
+        <ImageView
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:src="@drawable/ri_error_warning_line"
+            android:tint="#856404"
+            android:layout_marginEnd="8dp" />
+
+        <TextView
+            android:id="@+id/fallbackWarningTV"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="#856404"
+            android:textSize="12sp"
+            android:text="Video source is inaccessible. Playing audio fallback." />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/reselectVideoBT"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:contentDescription="Re-select video"
+            android:textColor="#856404"
+            android:textSize="11sp"
+            android:text="Pick"
+            app:icon="@drawable/ri_file_video_line"
+            app:iconGravity="textStart"
+            app:iconPadding="4dp"
+            app:iconTint="#856404" />
+    </LinearLayout>
+
+    <com.google.android.material.progressindicator.LinearProgressIndicator
+        android:id="@+id/progressBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/fallbackWarningLayout" />
+
+    <LinearLayout
+        android:id="@+id/status_row"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/progressBar">
+
+        <TextView
+            android:id="@+id/statusTV"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/progressPercentageTV"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/cancel_BT"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginStart="8dp"
+            android:contentDescription="Cancel"
+            android:text="Stop"
+            android:visibility="gone"
+            app:icon="@drawable/ri_close_line"
+            app:iconGravity="textStart"
+            app:iconPadding="4dp" />
+    </LinearLayout>
+
+    <androidx.constraintlayout.widget.Barrier
+        android:id="@+id/previewContentTopBarrier"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        app:barrierAllowsGoneWidgets="false"
+        app:barrierDirection="bottom"
+        app:constraint_referenced_ids="playerFrame,fallbackWarningLayout,progressBar,status_row" />
+
+    <!-- Subtitle RecyclerView occupying remaining space, constrained above the button bar -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerView"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/previewContentTopBarrier"
+        app:layout_constraintBottom_toTopOf="@id/button_row" />
+
+    <!-- Button bar positioned statically at the very bottom of the screen -->
+    <LinearLayout
+        android:id="@+id/button_row"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:orientation="horizontal"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/adjust_position_BT"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_marginEnd="6dp"
+            android:layout_weight="1"
+            android:contentDescription="Adjust subtitle position"
+            android:text="Move"
+            android:visibility="gone"
+            app:icon="@drawable/ri_settings_3_line"
+            app:iconGravity="textStart"
+            app:iconPadding="6dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/export_video_BT"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:contentDescription="Export subtitles or video"
+            android:text="Export"
+            android:visibility="gone"
+            app:icon="@drawable/ri_export_line"
+            app:iconGravity="textStart"
+            app:iconPadding="6dp" />
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

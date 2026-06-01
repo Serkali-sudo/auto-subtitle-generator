@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/action_select_all_exports"
+        android:icon="@drawable/ri_checkbox_circle_line"
+        android:title="Select All"
+        app:showAsAction="always" />
+    <item
+        android:id="@+id/action_move_exports"
+        android:icon="@drawable/ri_folder_open_line"
+        android:title="Move"
+        app:showAsAction="always" />
+    <item
+        android:id="@+id/action_share_exports"
+        android:icon="@drawable/ri_share_line"
+        android:title="Share"
+        app:showAsAction="always" />
+    <item
+        android:id="@+id/action_delete_exports"
+        android:icon="@drawable/ri_delete_bin_line"
+        android:title="Delete"
+        app:showAsAction="always" />
+</menu>

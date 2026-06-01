@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/action_select_all_queue"
+        android:icon="@drawable/ri_checkbox_circle_line"
+        android:title="Select All"
+        app:showAsAction="always" />
+    <item
+        android:id="@+id/action_export_selected"
+        android:icon="@drawable/ri_export_line"
+        android:title="Export Selected"
+        app:showAsAction="always" />
+    <item
+        android:id="@+id/action_delete_selected"
+        android:icon="@drawable/ri_delete_bin_line"
+        android:title="Delete Selected"
+        app:showAsAction="always" />
+</menu>

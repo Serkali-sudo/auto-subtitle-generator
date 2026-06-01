@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/nav_generate"
+        android:icon="@drawable/ri_video_add_line"
+        android:title="Generate" />
+
+    <item
+        android:id="@+id/nav_models"
+        android:icon="@drawable/ri_download_line"
+        android:title="Models" />
+
+    <item
+        android:id="@+id/nav_exports"
+        android:icon="@drawable/ri_folder_open_line"
+        android:title="Exports" />
+
+    <item
+        android:id="@+id/nav_settings"
+        android:icon="@drawable/ri_settings_3_line"
+        android:title="Settings" />
+</menu>
