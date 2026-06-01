@@ -19,15 +19,13 @@ Auto Subtitle Generator is an Android app for creating, editing, and exporting s
 
 ## Screenshots
 
-I will add screenshots here later.
-
 | Generate | Preview | Models |
 | --- | --- | --- |
-| `docs/screenshots/generate.png` | `docs/screenshots/preview.png` | `docs/screenshots/models.png` |
+| <img width="270" height="600" alt="Screenshot_20260602_001838" src="https://github.com/user-attachments/assets/1b0b5085-228b-4503-b573-de4e3254001d" /> | <img width="270" height="600" alt="Screenshot_20260602_002104" src="https://github.com/user-attachments/assets/fcaec73e-fd06-4018-9f1f-40e5ceaac0d5" /> | <img width="270" height="600" alt="Screenshot_20260602_002154" src="https://github.com/user-attachments/assets/587eb864-e00f-419e-84db-bf352fd14abe" /> |
 
 | Exports | Settings |
 | --- | --- |
-| `docs/screenshots/exports.png` | `docs/screenshots/settings.png` |
+| <img width="270" height="600" alt="Screenshot_20260602_002525" src="https://github.com/user-attachments/assets/3ba347db-fd3d-4073-9e75-fdbc7a75136e" /> | <img width="270" height="600" alt="Screenshot_20260602_002536" src="https://github.com/user-attachments/assets/6e5429ef-df4b-4024-b675-aec1d40b6040" /> |
 
 ## Features
 
