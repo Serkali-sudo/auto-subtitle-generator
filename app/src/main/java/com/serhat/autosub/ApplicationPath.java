@@ -13,7 +13,11 @@ import java.io.File;
 public class ApplicationPath {
 
     public static String applicationPath(Context context) {
-        return getQuantumPath("AutoSub", Environment.DIRECTORY_MOVIES, context);
+        File exportRoot = ExportSettings.getExportRoot(context);
+        if (exportRoot.isDirectory() || exportRoot.mkdirs()) {
+            return exportRoot.getPath();
+        }
+        return lastResort("exports", context);
     }
 
     public static String getQuantumPath(String folderName, String dir, Context context) {

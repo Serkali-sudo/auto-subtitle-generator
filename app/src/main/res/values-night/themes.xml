@@ -3,6 +3,17 @@
     <style name="Base.Theme.AutoSub" parent="Theme.Material3.DayNight.NoActionBar">
         <!-- Customize your dark theme here. -->
         <!-- <item name="colorPrimary">@color/my_dark_primary</item> -->
+        <item name="colorPrimary">@color/m3_primary_container</item>
+        <item name="colorOnPrimary">@color/m3_on_primary_container</item>
+        <item name="colorPrimaryContainer">@color/m3_primary</item>
+        <item name="colorOnPrimaryContainer">@color/m3_on_primary</item>
+        <item name="colorSecondary">@color/m3_secondary_container</item>
+        <item name="colorOnSecondary">@color/m3_on_secondary_container</item>
+        <item name="colorSecondaryContainer">@color/m3_secondary</item>
+        <item name="colorOnSecondaryContainer">@color/m3_on_secondary</item>
+        <item name="colorTertiary">@color/m3_tertiary</item>
+        <item name="colorOnTertiary">@color/m3_on_tertiary</item>
+        <item name="android:colorAccent">@color/m3_primary_container</item>
         <item name="windowActionModeOverlay">true</item>
     </style>
 </resources>

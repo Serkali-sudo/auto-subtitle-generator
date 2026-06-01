@@ -1,429 +1,268 @@
 package com.serhat.autosub;
 
-import android.Manifest;
-import android.content.DialogInterface;
-import android.content.Intent;
-import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.database.Cursor;
+import android.graphics.Color;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.util.Log;
+import android.provider.OpenableColumns;
 import android.view.Menu;
-import android.view.MenuInflater;
 import android.view.MenuItem;
-import android.view.View;
-import android.widget.Button;
-import android.widget.Toast;
-import android.app.AlertDialog;
-import android.widget.EditText;
-import android.graphics.Typeface;
+import android.view.ViewGroup;
+import android.view.Window;
 
-import androidx.activity.EdgeToEdge;
-import androidx.activity.result.ActivityResultCallback;
 import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.PickVisualMediaRequest;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentManager;
+import androidx.lifecycle.ViewModelProvider;
 
-import androidx.appcompat.app.AppCompatDelegate;
-import androidx.appcompat.view.ActionMode;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
-import androidx.media3.common.PlaybackException;
-import androidx.media3.common.Player;
-import androidx.recyclerview.widget.LinearLayoutManager;
-import androidx.media3.common.MediaItem;
-import androidx.media3.exoplayer.ExoPlayer;
-import androidx.media3.ui.PlayerView;
-
-import com.google.android.material.appbar.MaterialToolbar;
-import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.serhat.autosub.databinding.ActivityMainBinding;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
-import java.util.TreeSet;
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
-public class MainActivity extends AppCompatActivity implements ActionMode.Callback {
+public class MainActivity extends AppCompatActivity {
 
     private ActivityMainBinding binding;
-    private SubtitleGenerator subtitleGenerator;
-    private SubtitleAdapter subtitleAdapter;
-    private List<SubtitleGenerator.SubtitleEntry> subtitleEntries;
-    private ExoPlayer player;
-    private Uri currentVideoUri;
-    private ActionMode actionMode;
-    private MenuItem select_video_menu;
+    private MainViewModel viewModel;
 
-    private enum Operation {SUBTITLE, VIDEO, NONE}
-
-    private Operation operation = Operation.NONE;
-
-    ActivityResultLauncher<PickVisualMediaRequest> pickMedia =
-            registerForActivityResult(new ActivityResultContracts.PickVisualMedia(), uri -> {
-                if (uri != null) {
-                    Log.d("PhotoPicker", "Selected URI: " + uri);
-                    binding.selectVideoBT.setVisibility(View.GONE);
-                    if (select_video_menu != null) {
-                        select_video_menu.setVisible(true);
+    private final ActivityResultLauncher<String[]> pickMultipleMedia =
+            registerForActivityResult(new ActivityResultContracts.OpenMultipleDocuments(), uris -> {
+                if (uris != null && !uris.isEmpty()) {
+                    for (Uri uri : uris) {
+                        try {
+                            getContentResolver().takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        } catch (Exception e) {
+                            android.util.Log.e("MainActivity", "Failed to take persistable URI permission", e);
+                        }
                     }
-                    generateSubtitles(uri);
-                } else {
-                    Log.d("PhotoPicker", "No media selected");
+                    addVideosToQueue(uris);
                 }
             });
-
-    private static final long UPDATE_INTERVAL = 100;
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private int currentHighlightedPosition = -1;
-    private final Runnable updateHighlightRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (player != null && player.isPlaying()) {
-                updateHighlightedSubtitle(player.getCurrentPosition());
-                handler.postDelayed(this, UPDATE_INTERVAL);
-            }
-        }
-    };
-
-    private static final String TAG = "MainActivity";
-
-    private void selectVideo() {
-        pickMedia.launch(new PickVisualMediaRequest.Builder()
-                .setMediaType(ActivityResultContracts.PickVisualMedia.VideoOnly.INSTANCE)
-                .build());
-    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
-        MaterialToolbar toolbar = findViewById(R.id.toolbar);
-        setSupportActionBar(toolbar);
+        setupEdgeToEdge();
+        setSupportActionBar(binding.toolbar);
 
-        player = new ExoPlayer.Builder(this).build();
-        PlayerView playerView = binding.playerView;
-        playerView.setPlayer(player);
-
-        binding.selectVideoBT.setEnabled(false);
-
-        subtitleGenerator = new SubtitleGenerator(this);
-        binding.selectVideoBT.setText("Loading Model...");
-        subtitleGenerator.initModel(new SubtitleGenerator.ModelInitCallback() {
-            @Override
-            public void onModelInitialized() {
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        binding.selectVideoBT.setText("Select Video");
-                        binding.selectVideoBT.setEnabled(true);
-                    }
-                });
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 101);
             }
+        }
 
-            @Override
-            public void onError(String errorMessage) {
-                runOnUiThread(() -> {
-                    binding.selectVideoBT.setEnabled(false);
-                    Toast.makeText(MainActivity.this, "Error initializing model: " + errorMessage, Toast.LENGTH_LONG).show();
-                });
+        viewModel = new ViewModelProvider(this).get(MainViewModel.class);
+
+        setupNavigation();
+        observeViewModel();
+
+        // Initialize speech model load on startup
+        viewModel.initializeSelectedModel();
+
+        // Default screen
+        if (savedInstanceState == null) {
+            viewModel.setActiveNavigationTab(R.id.nav_generate);
+        }
+    }
+
+    private void setupEdgeToEdge() {
+        Window window = getWindow();
+        WindowCompat.setDecorFitsSystemWindows(window, false);
+        window.setStatusBarColor(Color.TRANSPARENT);
+        window.setNavigationBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.setStatusBarContrastEnforced(false);
+            window.setNavigationBarContrastEnforced(false);
+        }
+
+        boolean lightBars = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                != Configuration.UI_MODE_NIGHT_YES;
+        WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, window.getDecorView());
+        controller.setAppearanceLightStatusBars(lightBars);
+        controller.setAppearanceLightNavigationBars(lightBars);
+
+        applySystemBarInsets();
+    }
+
+    private void applySystemBarInsets() {
+        final int toolbarInitialHeight = binding.toolbar.getLayoutParams().height;
+        final int toolbarInitialPaddingLeft = binding.toolbar.getPaddingLeft();
+        final int toolbarInitialPaddingTop = binding.toolbar.getPaddingTop();
+        final int toolbarInitialPaddingRight = binding.toolbar.getPaddingRight();
+        final int toolbarInitialPaddingBottom = binding.toolbar.getPaddingBottom();
+
+        final int bottomNavInitialPaddingLeft = binding.bottomNavigation.getPaddingLeft();
+        final int bottomNavInitialPaddingTop = binding.bottomNavigation.getPaddingTop();
+        final int bottomNavInitialPaddingRight = binding.bottomNavigation.getPaddingRight();
+        final int bottomNavInitialPaddingBottom = binding.bottomNavigation.getPaddingBottom();
+
+        final ViewGroup.MarginLayoutParams contentInitialParams =
+                (ViewGroup.MarginLayoutParams) binding.contentHost.getLayoutParams();
+        final int contentInitialLeftMargin = contentInitialParams.leftMargin;
+        final int contentInitialRightMargin = contentInitialParams.rightMargin;
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.main, (view, windowInsets) -> {
+            Insets systemBars = windowInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+
+            ViewGroup.LayoutParams toolbarParams = binding.toolbar.getLayoutParams();
+            toolbarParams.height = toolbarInitialHeight + systemBars.top;
+            binding.toolbar.setLayoutParams(toolbarParams);
+            binding.toolbar.setPadding(
+                    toolbarInitialPaddingLeft + systemBars.left,
+                    toolbarInitialPaddingTop + systemBars.top,
+                    toolbarInitialPaddingRight + systemBars.right,
+                    toolbarInitialPaddingBottom);
+
+            binding.bottomNavigation.setPadding(
+                    bottomNavInitialPaddingLeft + systemBars.left,
+                    bottomNavInitialPaddingTop,
+                    bottomNavInitialPaddingRight + systemBars.right,
+                    bottomNavInitialPaddingBottom + systemBars.bottom);
+
+            ViewGroup.MarginLayoutParams contentParams =
+                    (ViewGroup.MarginLayoutParams) binding.contentHost.getLayoutParams();
+            contentParams.leftMargin = contentInitialLeftMargin + systemBars.left;
+            contentParams.rightMargin = contentInitialRightMargin + systemBars.right;
+            binding.contentHost.setLayoutParams(contentParams);
+
+            return WindowInsetsCompat.CONSUMED;
+        });
+        ViewCompat.requestApplyInsets(binding.main);
+    }
+
+    private void setupNavigation() {
+        binding.bottomNavigation.setOnItemSelectedListener(item -> {
+            int id = item.getItemId();
+            if (viewModel.getActiveNavigationTab().getValue() != id) {
+                viewModel.setActiveNavigationTab(id);
             }
+            return true;
+        });
+    }
+
+    private void observeViewModel() {
+        viewModel.getActiveNavigationTab().observe(this, id -> {
+            binding.bottomNavigation.setSelectedItemId(id);
+            navigateToTab(id);
         });
 
-        subtitleAdapter = new SubtitleAdapter();
-        subtitleAdapter.setOnSubtitleClickListener(this::showEditSubtitleDialog);
-        subtitleAdapter.setOnPlayClickListener(this::seekToTime);
-        subtitleAdapter.setOnDeleteClickListener(this::deleteSubtitle);
-        subtitleAdapter.setOnItemLongClickListener(this::startSelectionMode);
-
-        LinearLayoutManager layoutManager = new LinearLayoutManager(this);
-        binding.recyclerView.setLayoutManager(layoutManager);
-        binding.recyclerView.setAdapter(subtitleAdapter);
-
-        binding.selectVideoBT.setOnClickListener(v -> {
-            selectVideo();
+        viewModel.getNavigateToPreviewTrigger().observe(this, trigger -> {
+            if (Boolean.TRUE.equals(trigger)) {
+                navigateToPreview();
+                viewModel.consumeNavigateToPreviewTrigger();
+            }
         });
+    }
 
-        binding.saveSubtitlesBT.setOnClickListener(v -> {
-            if (subtitleEntries != null && !subtitleEntries.isEmpty()) {
-                if ((ActivityCompat.checkSelfPermission(this,
-                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
-                        && !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)) {
-                    operation = Operation.SUBTITLE;
-                    requestPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-                } else {
-                    saveSubtitles();
-                }
+    private void navigateToTab(int itemId) {
+        // Clear back stack when switching primary tabs to keep navigation linear and clean
+        getSupportFragmentManager().popBackStack(null, FragmentManager.POP_BACK_STACK_INCLUSIVE);
+
+        FragmentManager fm = getSupportFragmentManager();
+        androidx.fragment.app.FragmentTransaction transaction = fm.beginTransaction();
+
+        String generateTag = "generate";
+        String modelsTag = "models";
+        String exportsTag = "exports";
+        String settingsTag = "settings";
+
+        Fragment generate = fm.findFragmentByTag(generateTag);
+        Fragment models = fm.findFragmentByTag(modelsTag);
+        Fragment exports = fm.findFragmentByTag(exportsTag);
+        Fragment settings = fm.findFragmentByTag(settingsTag);
+
+        // Hide all first
+        if (generate != null) transaction.hide(generate);
+        if (models != null) transaction.hide(models);
+        if (exports != null) transaction.hide(exports);
+        if (settings != null) transaction.hide(settings);
+
+        String title;
+        if (itemId == R.id.nav_generate) {
+            if (generate == null) {
+                generate = new GenerateFragment();
+                transaction.add(R.id.contentHost, generate, generateTag);
             } else {
-                Toast.makeText(this, "No subtitles to save", Toast.LENGTH_SHORT).show();
+                transaction.show(generate);
             }
-        });
-
-        player.addListener(new Player.Listener() {
-            @Override
-            public void onPlaybackStateChanged(int playbackState) {
-                if (playbackState == Player.STATE_READY) {
-                    startSubtitleHighlightUpdate();
-                } else {
-                    stopSubtitleHighlightUpdate();
-                }
+            title = getString(R.string.app_name);
+        } else if (itemId == R.id.nav_models) {
+            if (models == null) {
+                models = new ModelsFragment();
+                transaction.add(R.id.contentHost, models, modelsTag);
+            } else {
+                transaction.show(models);
             }
-
-            @Override
-            public void onIsPlayingChanged(boolean isPlaying) {
-                if (isPlaying) {
-                    startSubtitleHighlightUpdate();
-                } else {
-                    stopSubtitleHighlightUpdate();
-                }
+            title = "Models";
+        } else if (itemId == R.id.nav_exports) {
+            if (exports == null) {
+                exports = new ExportsFragment();
+                transaction.add(R.id.contentHost, exports, exportsTag);
+            } else {
+                transaction.show(exports);
             }
-
-            @Override
-            public void onPositionDiscontinuity(Player.PositionInfo oldPosition, Player.PositionInfo newPosition, int reason) {
-                updateHighlightedSubtitle(newPosition.positionMs);
+            title = "Exports";
+        } else if (itemId == R.id.nav_settings) {
+            if (settings == null) {
+                settings = new SettingsFragment();
+                transaction.add(R.id.contentHost, settings, settingsTag);
+            } else {
+                transaction.show(settings);
             }
-
-            @Override
-            public void onPlayerError(PlaybackException error) {
-                Player.Listener.super.onPlayerError(error);
-            }
-        });
-
-        Button exportVideoBT = binding.exportVideoBT;
-        exportVideoBT.setOnClickListener(v -> exportVideoWithSubtitles());
-
-
-        binding.cancelBT.setOnClickListener(v -> {
-            subtitleGenerator.cancelGeneration();
-            binding.cancelBT.setVisibility(View.GONE);
-            binding.statusTV.setText("Cancelling...");
-        });
-
-
-    }
-
-    private void generateSubtitles(Uri videoUri) {
-        subtitleEntries = new ArrayList<>();
-        subtitleAdapter.setSubtitles(subtitleEntries);
-        subtitleAdapter.notifyDataSetChanged();
-
-        binding.progressBar.setVisibility(View.VISIBLE);
-        binding.progressBar.setIndeterminate(false);
-        binding.progressPercentageTV.setVisibility(View.VISIBLE);
-        binding.cancelBT.setVisibility(View.VISIBLE);
-        binding.statusTV.setText("Generating subtitles...");
-        binding.recyclerView.setVisibility(View.VISIBLE);
-        binding.saveSubtitlesBT.setVisibility(View.GONE);
-        binding.playerView.setVisibility(View.GONE);
-
-        currentVideoUri = videoUri;
-
-        Log.d(TAG, "Starting subtitle generation for video: " + videoUri);
-
-        subtitleGenerator.generateSubtitles(videoUri, new SubtitleGenerator.SubtitleGenerationCallback() {
-            @Override
-            public void onPartialSubtitlesGenerated(List<SubtitleGenerator.SubtitleEntry> partialSubtitles) {
-                runOnUiThread(() -> {
-                    subtitleEntries = partialSubtitles;
-                    subtitleAdapter.setSubtitles(partialSubtitles);
-                    binding.recyclerView.post(() -> {
-                        int lastPosition = subtitleAdapter.getItemCount() - 1;
-                        if (lastPosition >= 0) {
-                            binding.recyclerView.smoothScrollToPosition(lastPosition);
-                        }
-                    });
-                });
-            }
-
-            @Override
-            public void onSubtitlesGenerated(List<SubtitleGenerator.SubtitleEntry> entries) {
-                Log.d(TAG, "Subtitles generated successfully. Total entries: " + entries.size());
-                runOnUiThread(() -> {
-                    binding.progressBar.setVisibility(View.GONE);
-                    binding.progressPercentageTV.setVisibility(View.GONE);
-                    binding.cancelBT.setVisibility(View.GONE);
-                    binding.statusTV.setText("Subtitles generated. Review and save:");
-                    binding.saveSubtitlesBT.setVisibility(View.VISIBLE);
-                    binding.playerView.setVisibility(View.VISIBLE);
-
-                    subtitleEntries = entries;
-                    subtitleAdapter.setSubtitles(entries);
-
-                    prepareVideo(videoUri);
-
-                    binding.exportVideoBT.setVisibility(View.VISIBLE);
-                });
-            }
-
-            @Override
-            public void onError(String errorMessage) {
-                Log.e(TAG, "Error generating subtitles: " + errorMessage);
-                runOnUiThread(() -> {
-                    binding.progressBar.setVisibility(View.GONE);
-                    binding.progressPercentageTV.setVisibility(View.GONE);
-                    binding.cancelBT.setVisibility(View.GONE);
-                    binding.statusTV.setText("Error: " + errorMessage);
-                });
-            }
-
-            @Override
-            public void onProgressUpdate(int progress) {
-                Log.d(TAG, "Subtitle generation progress: " + progress + "%");
-                runOnUiThread(() -> {
-                    binding.progressBar.setProgress(progress);
-                    binding.progressPercentageTV.setText(progress + "%");
-                });
-            }
-
-            @Override
-            public void onCancelled() {
-                Log.d(TAG, "Subtitle generation cancelled");
-                runOnUiThread(() -> {
-                    binding.progressBar.setVisibility(View.GONE);
-                    binding.progressPercentageTV.setVisibility(View.GONE);
-                    binding.cancelBT.setVisibility(View.GONE);
-                    binding.statusTV.setText("Subtitle generation cancelled");
-                });
-            }
-        });
-    }
-
-    private void prepareVideo(Uri videoUri) {
-        MediaItem mediaItem = MediaItem.fromUri(videoUri);
-        player.setMediaItem(mediaItem);
-        player.prepare();
-        player.play();
-    }
-
-    private void updateHighlightedSubtitle(long positionMs) {
-        int newHighlightedPosition = -1;
-        for (int i = 0; i < subtitleEntries.size(); i++) {
-            SubtitleGenerator.SubtitleEntry entry = subtitleEntries.get(i);
-            long startTime = parseTime(entry.getStartTime());
-            long endTime = parseTime(entry.getEndTime());
-            if (positionMs >= startTime && positionMs < endTime) {
-                newHighlightedPosition = i;
-                break;
-            }
-        }
-
-        if (newHighlightedPosition != currentHighlightedPosition) {
-            currentHighlightedPosition = newHighlightedPosition;
-            subtitleAdapter.setHighlightedPosition(currentHighlightedPosition);
-            if (currentHighlightedPosition != -1) {
-                binding.recyclerView.smoothScrollToPosition(currentHighlightedPosition);
-            }
-        }
-    }
-
-    private long parseTime(String timeString) {
-        String[] parts = timeString.split("[:,]");
-        return Long.parseLong(parts[0]) * 3600000L +
-                Long.parseLong(parts[1]) * 60000L +
-                Long.parseLong(parts[2]) * 1000L +
-                Long.parseLong(parts[3]);
-    }
-
-    private void saveSubtitles() {
-        if (subtitleEntries == null || subtitleEntries.isEmpty()) {
-            Toast.makeText(this, "No subtitles to save", Toast.LENGTH_SHORT).show();
+            title = "Settings";
+        } else {
             return;
         }
 
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Choose subtitle format")
-                .setItems(new CharSequence[]{"SRT", "VTT"}, (dialog, which) -> {
-                    String format = (which == 0) ? "srt" : "vtt";
-                    saveSubtitlesInFormat(format);
-                });
-        builder.create().show();
+        binding.toolbar.setTitle(title);
+        transaction.commit();
     }
 
-    private void saveSubtitlesInFormat(String format) {
-        if (currentVideoUri == null) {
-            Toast.makeText(this, "No video selected", Toast.LENGTH_SHORT).show();
-            return;
+    private void navigateToPreview() {
+        binding.toolbar.setTitle("Preview");
+        FragmentManager fm = getSupportFragmentManager();
+        Fragment activeFragment = null;
+
+        if (fm.findFragmentByTag("generate") != null && !fm.findFragmentByTag("generate").isHidden()) {
+            activeFragment = fm.findFragmentByTag("generate");
+        } else if (fm.findFragmentByTag("models") != null && !fm.findFragmentByTag("models").isHidden()) {
+            activeFragment = fm.findFragmentByTag("models");
+        } else if (fm.findFragmentByTag("exports") != null && !fm.findFragmentByTag("exports").isHidden()) {
+            activeFragment = fm.findFragmentByTag("exports");
+        } else if (fm.findFragmentByTag("settings") != null && !fm.findFragmentByTag("settings").isHidden()) {
+            activeFragment = fm.findFragmentByTag("settings");
         }
 
-        binding.progressBar.setVisibility(View.VISIBLE);
-        binding.statusTV.setText("Saving subtitles in " + format.toUpperCase() + " format...");
-
-        List<SubtitleGenerator.SubtitleEntry> updatedSubtitles = subtitleAdapter.getSubtitles();
-
-        subtitleGenerator.saveSubtitlesToFile(updatedSubtitles, format, currentVideoUri, new SubtitleGenerator.SubtitleSaveCallback() {
-            @Override
-            public void onSubtitlesSaved(String filePath) {
-                runOnUiThread(() -> {
-                    binding.progressBar.setVisibility(View.GONE);
-                    binding.statusTV.setText(format.toUpperCase() + " subtitles saved: " + filePath);
-                    Toast.makeText(MainActivity.this, "Subtitles saved successfully", Toast.LENGTH_SHORT).show();
-                });
-            }
-
-            @Override
-            public void onError(String errorMessage) {
-                runOnUiThread(() -> {
-                    binding.progressBar.setVisibility(View.GONE);
-                    binding.statusTV.setText("Error saving subtitles: " + errorMessage);
-                    Toast.makeText(MainActivity.this, "Error saving subtitles", Toast.LENGTH_SHORT).show();
-                });
-            }
-        });
-    }
-
-    public final ActivityResultLauncher<String> requestPermissionLauncher = registerForActivityResult(
-            new ActivityResultContracts.RequestPermission(),
-            new ActivityResultCallback<Boolean>() {
-                @Override
-                public void onActivityResult(Boolean result) {
-                    if (!result) {
-                        if (ActivityCompat.shouldShowRequestPermissionRationale(MainActivity.this,
-                                "android.permission.WRITE_EXTERNAL_STORAGE")) {
-                            new MaterialAlertDialogBuilder(MainActivity.this)
-                                    .setTitle(getString(R.string.app_name) + " needs permission")
-                                    .setMessage("This app requires WRITE_EXTERNAL_STORAGE permission to save the file to permanent storage")
-                                    .setPositiveButton("Give Permission", new DialogInterface.OnClickListener() {
-                                        @Override
-                                        public void onClick(DialogInterface dialog, int which) {
-                                            saveSubtitleOrVideo();
-                                            dialog.dismiss();
-                                        }
-                                    })
-                                    .setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
-                                        @Override
-                                        public void onClick(DialogInterface dialog, int which) {
-                                            dialog.dismiss();
-                                        }
-                                    }).show();
-
-                        }
-                    } else {
-                        saveSubtitleOrVideo();
-                    }
-                }
-            }
-    );
-
-    private void saveSubtitleOrVideo() {
-        if (operation == Operation.VIDEO) {
-            exportVideoWithSubtitles();
-        } else if (operation == Operation.SUBTITLE) {
-            saveSubtitles();
+        androidx.fragment.app.FragmentTransaction transaction = fm.beginTransaction();
+        if (activeFragment != null) {
+            transaction.hide(activeFragment);
         }
+        transaction.add(R.id.contentHost, new PreviewFragment(), "preview")
+                .addToBackStack("preview")
+                .commit();
     }
+
+    // --- Toolbar Options Menu ---
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         getMenuInflater().inflate(R.menu.main_menu, menu);
-        select_video_menu = menu.findItem(R.id.select_video_menu);
         return super.onCreateOptionsMenu(menu);
     }
 
@@ -432,224 +271,132 @@ public class MainActivity extends AppCompatActivity implements ActionMode.Callba
         int id = item.getItemId();
         if (id == R.id.select_video_menu) {
             selectVideo();
+            return true;
+        } else if (id == R.id.manage_models_menu) {
+            viewModel.setActiveNavigationTab(R.id.nav_models);
+            return true;
         } else if (id == R.id.open_project_menu) {
-            Intent intent = new Intent(Intent.ACTION_VIEW);
-            intent.setData(Uri.parse("https://github.com/Serkali-sudo/auto-subtitle-generator"));
-            startActivity(intent);
+            startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, 
+                Uri.parse("https://github.com/Serkali-sudo/auto-subtitle-generator")));
+            return true;
         }
         return super.onOptionsItemSelected(item);
     }
 
-    private void startSubtitleHighlightUpdate() {
-        handler.removeCallbacks(updateHighlightRunnable);
-        handler.post(updateHighlightRunnable);
-    }
-
-    private void stopSubtitleHighlightUpdate() {
-        handler.removeCallbacks(updateHighlightRunnable);
-    }
-
-    @Override
-    protected void onDestroy() {
-        stopSubtitleHighlightUpdate();
-        if (subtitleGenerator != null) {
-            subtitleGenerator.cancelGeneration();
-        }
-        player.release();
-        super.onDestroy();
-    }
-
-    private void showEditSubtitleDialog(int position, SubtitleGenerator.SubtitleEntry entry) {
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Edit Subtitle");
-
-        final EditText input = new EditText(this);
-        input.setText(entry.getText());
-        builder.setView(input);
-
-        builder.setPositiveButton("Save", (dialog, which) -> {
-            String newText = input.getText().toString();
-            subtitleAdapter.updateSubtitle(position, newText);
-        });
-        builder.setNegativeButton("Cancel", (dialog, which) -> dialog.cancel());
-
-        builder.show();
-    }
-
-    private void exportVideoWithSubtitles() {
-
-        if ((ActivityCompat.checkSelfPermission(this,
-                android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
-                && !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)) {
-            operation = Operation.VIDEO;
-            requestPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-        } else {
-            if (currentVideoUri == null || subtitleEntries == null || subtitleEntries.isEmpty()) {
-                Toast.makeText(this, "No video or subtitles available", Toast.LENGTH_SHORT).show();
-                return;
-            }
-
-            AlertDialog.Builder builder = new AlertDialog.Builder(this);
-            builder.setTitle("Choose Subtitle Type")
-                    .setItems(new CharSequence[]{"Soft Subtitles", "Hard Subtitles"}, (dialog, which) -> {
-                        boolean burnSubtitles = (which == 1);
-                        if (burnSubtitles) {
-                            startExport(true, "RobotoRegular");
-                        } else {
-                            startExport(false, null);
-                        }
-                    });
-            builder.create().show();
-        }
-
-    }
-
-    private void startExport(boolean burnSubtitles, String fontName) {
-        binding.progressBar.setVisibility(View.VISIBLE);
-        binding.progressBar.setIndeterminate(true);
-        binding.statusTV.setText("Exporting video with " + (burnSubtitles ? "hard" : "soft") + " subtitles...");
-
-        List<SubtitleGenerator.SubtitleEntry> updatedSubtitles = subtitleAdapter.getSubtitles();
-
-        subtitleGenerator.exportVideoWithSubtitles(currentVideoUri, updatedSubtitles, burnSubtitles, fontName, new SubtitleGenerator.VideoExportCallback() {
-            @Override
-            public void onVideoExported(String filePath) {
-                runOnUiThread(() -> {
-                    binding.progressBar.setVisibility(View.GONE);
-                    binding.statusTV.setText("Video exported: " + filePath);
-                    Toast.makeText(MainActivity.this, "Video exported successfully", Toast.LENGTH_LONG).show();
-                });
-            }
-
-            @Override
-            public void onError(String errorMessage) {
-                runOnUiThread(() -> {
-                    binding.progressBar.setVisibility(View.GONE);
-                    binding.statusTV.setText("Error exporting video: " + errorMessage);
-                    Toast.makeText(MainActivity.this, "Error exporting video", Toast.LENGTH_SHORT).show();
-                });
-            }
-
-            @Override
-            public void onProgressUpdate(int progress) {
-                runOnUiThread(() -> {
-                    binding.progressBar.setProgress(progress);
-                });
-            }
-        });
-    }
-
-    private void seekToTime(long timeMs) {
-        if (player != null) {
-            player.seekTo(timeMs);
-            player.play();
-        }
-    }
-
-    private void deleteSubtitle(int position) {
-        new AlertDialog.Builder(this)
-                .setTitle("Delete Subtitle")
-                .setMessage("Are you sure you want to delete this subtitle?")
-                .setPositiveButton("Yes", (dialog, which) -> {
-                    subtitleAdapter.deleteSubtitle(position);
-                    List<SubtitleGenerator.SubtitleEntry> updatedSubtitles = subtitleAdapter.getSubtitles();
-                    for (int i = position; i < updatedSubtitles.size(); i++) {
-                        updatedSubtitles.get(i).setNumber(i + 1);
-                    }
-                    subtitleAdapter.notifyItemRangeChanged(position, updatedSubtitles.size() - position);
-                })
-                .setNegativeButton("No", null)
-                .show();
-    }
-
-    private void startSelectionMode(int position) {
-        if (actionMode == null) {
-            actionMode = startSupportActionMode(this);
-        }
-        subtitleAdapter.setSelectionMode(true);
-        subtitleAdapter.toggleSelection(position);
-    }
-
-
-    @Override
-    public boolean onCreateActionMode(ActionMode mode, Menu menu) {
-        MenuInflater inflater = mode.getMenuInflater();
-        inflater.inflate(R.menu.selection_menu, menu);
-        return true;
-    }
-
-    @Override
-    public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
-        return false;
-    }
-
-    @Override
-    public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-        int id = item.getItemId();
-        if (id == R.id.action_merge) {
-            mergeSelectedSubtitles();
-            mode.finish();
-            return true;
-        } else if (id == R.id.action_delete) {
-            deleteSelectedSubtitles();
-            mode.finish();
-            return true;
-        }
-        return false;
-    }
-
-    @Override
-    public void onDestroyActionMode(ActionMode mode) {
-        actionMode = null;
-        subtitleAdapter.setSelectionMode(false);
-    }
-
-    private void mergeSelectedSubtitles() {
-        Set<Integer> selectedPositions = subtitleAdapter.getSelectedPositions();
-        if (selectedPositions.size() < 2) {
-            Toast.makeText(this, "Select at least two subtitles to merge", Toast.LENGTH_SHORT).show();
+    private void selectVideo() {
+        if (Boolean.FALSE.equals(viewModel.getModelReady().getValue())) {
+            android.widget.Toast.makeText(this, "Speech model is still loading", android.widget.Toast.LENGTH_SHORT).show();
             return;
         }
-
-        List<Integer> sortedPositions = new ArrayList<>(selectedPositions);
-        Collections.sort(sortedPositions);
-
-        int startPosition = sortedPositions.get(0);
-        int endPosition = sortedPositions.get(sortedPositions.size() - 1);
-
-        SubtitleGenerator.SubtitleEntry mergedEntry = subtitleAdapter.getSubtitles().get(startPosition);
-        StringBuilder mergedText = new StringBuilder(mergedEntry.getText());
-
-        for (int i = startPosition + 1; i <= endPosition; i++) {
-            SubtitleGenerator.SubtitleEntry entry = subtitleAdapter.getSubtitles().get(i);
-            mergedText.append(" ").append(entry.getText());
-        }
-
-        mergedEntry.setText(mergedText.toString());
-        mergedEntry.setEndTime(subtitleAdapter.getSubtitles().get(endPosition).getEndTime());
-
-        for (int i = endPosition; i > startPosition; i--) {
-            subtitleAdapter.deleteSubtitle(i);
-        }
-
-        subtitleAdapter.notifyDataSetChanged();
-
-        List<SubtitleGenerator.SubtitleEntry> updatedSubtitles = subtitleAdapter.getSubtitles();
-        for (int i = startPosition; i < updatedSubtitles.size(); i++) {
-            updatedSubtitles.get(i).setNumber(i + 1);
-        }
-        subtitleAdapter.notifyItemRangeChanged(startPosition, updatedSubtitles.size() - startPosition);
+        pickMultipleMedia.launch(new String[]{"video/*"});
     }
 
-    private void deleteSelectedSubtitles() {
-        Set<Integer> selectedPositions = subtitleAdapter.getSelectedPositions();
-        List<Integer> sortedPositions = new ArrayList<>(selectedPositions);
-        Collections.sort(sortedPositions, Collections.reverseOrder());
-
-        for (int position : sortedPositions) {
-            subtitleAdapter.deleteSubtitle(position);
+    private void addVideosToQueue(List<Uri> uris) {
+        List<Uri> urisWithExports = new ArrayList<>();
+        List<File> allExistingFiles = new ArrayList<>();
+        for (Uri uri : uris) {
+            List<File> existing = viewModel.getExistingExportsForVideo(uri);
+            if (!existing.isEmpty()) {
+                urisWithExports.add(uri);
+                allExistingFiles.addAll(existing);
+            }
         }
 
-        subtitleAdapter.notifyDataSetChanged();
+        if (!urisWithExports.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("The following files already exist in your export library for the selected video(s):\n\n");
+            for (File file : allExistingFiles) {
+                sb.append("• ").append(file.getName()).append("\n");
+            }
+            sb.append("\nWould you like to overwrite/delete the existing exports and start fresh, or keep them and add the video anyway?");
+
+            AppOptionDialog.show(this,
+                    "Exported Files Already Exist",
+                    sb.toString(),
+                    new AppOptionDialog.Option[]{
+                            new AppOptionDialog.Option(R.drawable.ri_delete_bin_line,
+                                    "Overwrite / Delete", "Delete the previous exports from storage and start fresh."),
+                            new AppOptionDialog.Option(R.drawable.ri_checkbox_circle_line,
+                                    "Keep Existing & Add", "Keep the previous exports and add the video to the queue.")
+                    }, which -> {
+                        if (which == 0) {
+                            for (Uri uri : urisWithExports) {
+                                viewModel.deleteExportsForVideo(uri);
+                            }
+                        }
+                        proceedWithAddingVideos(uris);
+                    });
+        } else {
+            proceedWithAddingVideos(uris);
+        }
+    }
+
+    private void proceedWithAddingVideos(List<Uri> uris) {
+        if (viewModel.shouldShowShortsDialog(uris, this::isVerticalVideo)) {
+            showShortsDialog(uris);
+        } else {
+            viewModel.addVideosToQueue(uris, this::getDisplayName, this::isVerticalVideo);
+        }
+    }
+
+    private void showShortsDialog(List<Uri> uris) {
+        AppOptionDialog.showWithCheckbox(this,
+                "Shorts video detected",
+                "Vertical videos can be captioned one word at a time for a Shorts-style preview.",
+                new AppOptionDialog.Option[]{
+                        new AppOptionDialog.Option(
+                                "Word-by-word captions",
+                                "Show one recognized word at a time. Best for short-form social clips."),
+                        new AppOptionDialog.Option(
+                                "Standard captions",
+                                "Create normal subtitle lines. Better for readability and longer speech.")
+                }, "Don't show this again", false, (which, checked) -> {
+                    viewModel.setShortsTranscriptionPreferences(which == 0, checked);
+                    viewModel.addVideosToQueue(uris, this::getDisplayName, this::isVerticalVideo);
+                });
+    }
+
+    // --- Resolver Helpers ---
+
+    private String getDisplayName(Uri uri) {
+        try (Cursor cursor = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (index >= 0) return cursor.getString(index);
+            }
+        } catch (Exception ignored) {
+        }
+        return "Video";
+    }
+
+    private boolean isVerticalVideo(Uri uri) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(this, uri);
+            int width = parseMetadataInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
+            int height = parseMetadataInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
+            int rotation = parseMetadataInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION));
+            if (rotation == 90 || rotation == 270) {
+                int oldWidth = width;
+                width = height;
+                height = oldWidth;
+            }
+            return height > width;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private int parseMetadataInt(String value) {
+        try {
+            return value == null ? 0 : Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 }

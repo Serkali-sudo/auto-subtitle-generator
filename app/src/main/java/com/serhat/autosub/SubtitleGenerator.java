@@ -23,27 +23,33 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import android.os.Environment;
 import java.io.BufferedReader;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.io.InputStreamReader;
-import java.util.Map;
-import java.util.HashMap;
 import java.io.InputStream;
 import java.util.Collections;
 
 public class SubtitleGenerator {
     private static final String TAG = "SubtitleGenerator";
     private final Context context;
-    private Model model;
+    private volatile Model model;
+    private final Object modelLock = new Object();
+    private long currentLoadSessionId = 0;
+    private VoskModelInfo currentModelInfo;
     private final ExecutorService executorService;
     private static final int MAX_SUBTITLE_LENGTH = 42; 
     private volatile boolean isCancelled = false;
     private File audioFile;
+    private boolean wordByWordMode = false;
+
+    public void setWordByWordMode(boolean enabled) {
+        this.wordByWordMode = enabled;
+    }
 
     public SubtitleGenerator(Context context) {
         this.context = context;
@@ -57,34 +63,137 @@ public class SubtitleGenerator {
         void onError(String errorMessage);
     }
 
-    public void initModel(ModelInitCallback callback) {
-        Log.d(TAG,"Called Model Init");
-        StorageService.unpack(context, "model-en-us", "model",
-                (model) -> {
-                    this.model = model;
-                    Log.d(TAG, "Model initialized");
-                    callback.onModelInitialized();
-                },
-                (exception) -> {
-                    Log.e(TAG, "Failed to unpack the model: " + exception.getMessage());
-                    callback.onError(exception.getMessage());
-                });
+    public void initModel(VoskModelInfo modelInfo, ModelInitCallback callback) {
+        if (modelInfo == null) {
+            callback.onError("No model selected");
+            return;
+        }
+
+        Log.d(TAG, "Called Model Init for " + modelInfo.getId());
+
+        final long sessionId;
+        synchronized (modelLock) {
+            currentLoadSessionId++;
+            sessionId = currentLoadSessionId;
+
+            if (this.model != null) {
+                try {
+                    this.model.close();
+                    Log.d(TAG, "Released previous native speech model C++ memory allocation");
+                } catch (Throwable e) {
+                    Log.e(TAG, "Error releasing previous model memory", e);
+                } finally {
+                    this.model = null;
+                }
+            }
+        }
+
+        currentModelInfo = modelInfo;
+
+        if (modelInfo.isBundled()) {
+            StorageService.unpack(context, modelInfo.getBundledAssetName(), "model",
+                    (loadedModel) -> {
+                        synchronized (modelLock) {
+                            if (sessionId != currentLoadSessionId) {
+                                Log.d(TAG, "Obsolete bundled model loaded for session " + sessionId + ", closing it immediately.");
+                                try {
+                                    loadedModel.close();
+                                } catch (Throwable e) {
+                                    Log.e(TAG, "Error closing obsolete bundled model", e);
+                                }
+                                return;
+                            }
+                            this.model = loadedModel;
+                            this.currentModelInfo = modelInfo;
+                        }
+                        Log.d(TAG, "Bundled model initialized: " + modelInfo.getId());
+                        callback.onModelInitialized();
+                    },
+                    (exception) -> {
+                        Log.e(TAG, "Failed to unpack the model: " + exception.getMessage());
+                        synchronized (modelLock) {
+                            if (sessionId == currentLoadSessionId) {
+                                callback.onError(exception.getMessage());
+                            }
+                        }
+                    });
+            return;
+        }
+
+        executorService.execute(() -> {
+            try {
+                VoskModelManager modelManager = new VoskModelManager(context);
+                modelManager.loadCatalog();
+                File modelDirectory = modelManager.getModelDirectory(modelInfo);
+                if (!modelDirectory.isDirectory()) {
+                    synchronized (modelLock) {
+                        if (sessionId == currentLoadSessionId) {
+                            callback.onError("Model is not downloaded: " + modelInfo.getLanguage());
+                        }
+                    }
+                    return;
+                }
+
+                modelManager.prepareForMobileLoad(modelInfo);
+                Model loadedModel = new Model(modelDirectory.getAbsolutePath());
+
+                synchronized (modelLock) {
+                    if (sessionId != currentLoadSessionId) {
+                        Log.d(TAG, "Obsolete downloaded model loaded for session " + sessionId + ", closing it immediately.");
+                        try {
+                            loadedModel.close();
+                        } catch (Throwable e) {
+                            Log.e(TAG, "Error closing obsolete downloaded model", e);
+                        }
+                        return;
+                    }
+                    this.model = loadedModel;
+                    this.currentModelInfo = modelInfo;
+                }
+
+                Log.d(TAG, "Downloaded model initialized: " + modelInfo.getId());
+                callback.onModelInitialized();
+            } catch (Throwable e) {
+                Log.e(TAG, "Failed to load downloaded model", e);
+                synchronized (modelLock) {
+                    if (sessionId == currentLoadSessionId) {
+                        callback.onError(e.getMessage() == null ? "Failed to load model" : e.getMessage());
+                    }
+                }
+            }
+        });
+    }
+
+    public VoskModelInfo getCurrentModelInfo() {
+        return currentModelInfo;
     }
 
     public void cancelGeneration() {
         isCancelled = true;
+        FFmpegKit.cancel();
     }
 
-    public void generateSubtitles(Uri videoUri, SubtitleGenerationCallback callback) {
+    public void generateSubtitles(Uri videoUri, String permanentAudioPath, SubtitleGenerationCallback callback) {
         executorService.execute(() -> {
             try {
+                if (model == null) {
+                    callback.onError("Speech model is not ready");
+                    return;
+                }
                 isCancelled = false;
                 Log.d(TAG, "Starting subtitle generation process");
-                callback.onProgressUpdate(0);
+                callback.onProgressUpdate(-1);
 
                 Log.d(TAG, "Extracting audio from video");
                 audioFile = extractAudioFromVideo(videoUri);
-                callback.onProgressUpdate(20);
+
+                if (permanentAudioPath != null && !permanentAudioPath.isEmpty()) {
+                    try {
+                        copyFile(audioFile, new File(permanentAudioPath));
+                    } catch (Exception e) {
+                        Log.e(TAG, "Failed to copy audio permanently", e);
+                    }
+                }
 
                 if (isCancelled) {
                     callback.onCancelled();
@@ -92,8 +201,8 @@ public class SubtitleGenerator {
                 }
 
                 Log.d(TAG, "Performing speech recognition");
+                callback.onProgressUpdate(0);
                 List<SubtitleEntry> subtitleEntries = processAudioFile(audioFile, callback);
-                callback.onProgressUpdate(95);
 
                 if (isCancelled) {
                     callback.onCancelled();
@@ -106,7 +215,11 @@ public class SubtitleGenerator {
                 callback.onSubtitlesGenerated(subtitleEntries);
             } catch (Exception e) {
                 Log.e(TAG, "Error generating subtitles", e);
-                callback.onError("Error generating subtitles: " + e.getMessage());
+                if (isCancelled) {
+                    callback.onCancelled();
+                } else {
+                    callback.onError("Error generating subtitles: " + e.getMessage());
+                }
             }
         });
     }
@@ -141,38 +254,37 @@ public class SubtitleGenerator {
             recognizer = new Recognizer(model, 16000.0f);
             recognizer.setWords(true);
             
-            FileInputStream fis = new FileInputStream(audioFile);
-            if (fis.skip(44) != 44) throw new IOException("Audio file too short");
-            
-            byte[] buffer = new byte[4096];
-            int bytesRead;
-            long totalBytes = audioFile.length() - 44;
-            long processedBytes = 0;
-            int lastReportedProgress = 20;
-            
-            while ((bytesRead = fis.read(buffer)) != -1) {
-                if (isCancelled) {
-                    throw new IOException("Process cancelled");
+            try (FileInputStream fis = new FileInputStream(audioFile)) {
+                if (fis.skip(44) != 44) throw new IOException("Audio file too short");
+
+                byte[] buffer = new byte[4096];
+                int bytesRead;
+                long totalBytes = audioFile.length() - 44;
+                long processedBytes = 0;
+                int lastReportedProgress = 0;
+
+                while ((bytesRead = fis.read(buffer)) != -1) {
+                    if (isCancelled) {
+                        throw new IOException("Process cancelled");
+                    }
+
+                    if (recognizer.acceptWaveForm(buffer, bytesRead)) {
+                        String result = recognizer.getResult();
+                        processRecognitionResult(result, subtitles);
+                        callback.onPartialSubtitlesGenerated(new ArrayList<>(subtitles));
+                    }
+
+                    processedBytes += bytesRead;
+                    int currentProgress = totalBytes > 0 ? (int) (processedBytes * 100 / totalBytes) : 100;
+                    if (currentProgress > lastReportedProgress) {
+                        lastReportedProgress = currentProgress;
+                        callback.onProgressUpdate(currentProgress);
+                    }
                 }
 
-                if (recognizer.acceptWaveForm(buffer, bytesRead)) {
-                    String result = recognizer.getResult();
-                    processRecognitionResult(result, subtitles);
-                    callback.onPartialSubtitlesGenerated(new ArrayList<>(subtitles));
-                }
-                
-                processedBytes += bytesRead;
-                int currentProgress = (int) (20 + (processedBytes * 75 / totalBytes));
-                if (currentProgress > lastReportedProgress) {
-                    lastReportedProgress = currentProgress;
-                    callback.onProgressUpdate(currentProgress);
-                }
+                String finalResult = recognizer.getFinalResult();
+                processRecognitionResult(finalResult, subtitles);
             }
-
-            String finalResult = recognizer.getFinalResult();
-            processRecognitionResult(finalResult, subtitles);
-            
-            fis.close();
         } finally {
             if (recognizer != null) {
                 recognizer.close();
@@ -188,6 +300,7 @@ public class SubtitleGenerator {
             JSONArray wordsArray = jsonResult.getJSONArray("result");
             
             StringBuilder currentSubtitle = new StringBuilder();
+            List<WordTiming> currentWords = new ArrayList<>();
             double startTime = 0;
             double endTime = 0;
             
@@ -196,34 +309,51 @@ public class SubtitleGenerator {
                 String word = wordObj.getString("word");
                 double wordStart = wordObj.getDouble("start");
                 double wordEnd = wordObj.getDouble("end");
+                double confidence = wordObj.optDouble("conf", 0);
+                WordTiming timing = new WordTiming(word, (long) (wordStart * 1000), (long) (wordEnd * 1000), confidence);
                 
-                if (currentSubtitle.length() == 0) {
-                    startTime = wordStart;
-                }
-                
-                if (currentSubtitle.length() + word.length() + 1 > MAX_SUBTITLE_LENGTH) {
+                if (wordByWordMode) {
+                    List<WordTiming> singleWordList = new ArrayList<>();
+                    singleWordList.add(timing);
                     subtitles.add(new SubtitleEntry(subtitles.size() + 1,
-                        formatTime((long)(startTime * 1000)),
-                        formatTime((long)(endTime * 1000)),
-                        currentSubtitle.toString().trim()));
-
-                    currentSubtitle = new StringBuilder(word);
-                    startTime = wordStart;
+                        formatTime((long)(wordStart * 1000)),
+                        formatTime((long)(wordEnd * 1000)),
+                        word,
+                        singleWordList));
                 } else {
-                    if (currentSubtitle.length() > 0) {
-                        currentSubtitle.append(" ");
+                    if (currentSubtitle.length() == 0) {
+                        startTime = wordStart;
                     }
-                    currentSubtitle.append(word);
+                    
+                    if (currentSubtitle.length() + word.length() + 1 > MAX_SUBTITLE_LENGTH) {
+                        subtitles.add(new SubtitleEntry(subtitles.size() + 1,
+                            formatTime((long)(startTime * 1000)),
+                            formatTime((long)(endTime * 1000)),
+                            currentSubtitle.toString().trim(),
+                            new ArrayList<>(currentWords)));
+
+                        currentSubtitle = new StringBuilder(word);
+                        currentWords = new ArrayList<>();
+                        currentWords.add(timing);
+                        startTime = wordStart;
+                    } else {
+                        if (currentSubtitle.length() > 0) {
+                            currentSubtitle.append(" ");
+                        }
+                        currentSubtitle.append(word);
+                        currentWords.add(timing);
+                    }
+                    
+                    endTime = wordEnd;
                 }
-                
-                endTime = wordEnd;
             }
 
-            if (currentSubtitle.length() > 0) {
+            if (!wordByWordMode && currentSubtitle.length() > 0) {
                 subtitles.add(new SubtitleEntry(subtitles.size() + 1,
                     formatTime((long)(startTime * 1000)),
                     formatTime((long)(endTime * 1000)),
-                    currentSubtitle.toString().trim()));
+                    currentSubtitle.toString().trim(),
+                    new ArrayList<>(currentWords)));
             }
         } catch (Exception e) {
             Log.e(TAG, "Error processing recognition result", e);
@@ -257,13 +387,23 @@ public class SubtitleGenerator {
     }
 
     public void saveSubtitlesToFile(List<SubtitleEntry> entries, String format, Uri videoUri, SubtitleSaveCallback callback) {
+        saveSubtitlesToFile(entries, format, videoUri, null, callback);
+    }
+
+    public void saveSubtitlesToFile(List<SubtitleEntry> entries, String format, Uri videoUri,
+                                    File outputDir, SubtitleSaveCallback callback) {
         executorService.execute(() -> {
             try {
+                File exportDir = resolveOutputDir(outputDir);
                 String videoName = getVideoNameFromUri(videoUri);
-                String baseName = videoName + "_subtitles";
-                String uniqueFileName = getUniqueFileName(ApplicationPath.applicationPath(context), baseName, format.toLowerCase());
+                String extension = format.toLowerCase(Locale.US);
+                String uniqueFileName = buildExportFileName(extension + "-subtitles", videoName, extension);
                 
-                File subtitleFile = new File(ApplicationPath.applicationPath(context), uniqueFileName);
+                File subtitleFile = new File(exportDir, uniqueFileName);
+                if (subtitleFile.exists()) {
+                    callback.onError("Already exported subtitles for this video and model: " + subtitleFile.getName());
+                    return;
+                }
                 FileOutputStream fos = new FileOutputStream(subtitleFile);
 
                 if (format.equalsIgnoreCase("srt")) {
@@ -323,23 +463,33 @@ public class SubtitleGenerator {
         private String startTime;
         private String endTime;
         private String text;
+        private List<WordTiming> words;
 
         public SubtitleEntry(int number, String startTime, String endTime, String text) {
+            this(number, startTime, endTime, text, new ArrayList<>());
+        }
+
+        public SubtitleEntry(int number, String startTime, String endTime, String text, List<WordTiming> words) {
             this.number = number;
             this.startTime = startTime;
             this.endTime = endTime;
             this.text = text;
+            this.words = words == null ? new ArrayList<>() : words;
         }
 
         public int getNumber() { return number; }
         public String getStartTime() { return startTime; }
         public String getEndTime() { return endTime; }
         public String getText() { return text; }
+        public List<WordTiming> getWords() { return words; }
 
         public void setNumber(int number) { this.number = number; }
         public void setText(String text) { this.text = text; }
         public void setEndTime(String endTime) {
             this.endTime = endTime;
+        }
+        public void setWords(List<WordTiming> words) {
+            this.words = words == null ? new ArrayList<>() : words;
         }
     }
 
@@ -396,30 +546,65 @@ public class SubtitleGenerator {
     }
 
     public void exportVideoWithSubtitles(Uri videoUri, List<SubtitleEntry> subtitles, boolean burnSubtitles, String fontName, VideoExportCallback callback) {
+        exportVideoWithSubtitles(videoUri, subtitles, burnSubtitles, fontName, null, callback);
+    }
+
+    public void exportVideoWithSubtitles(Uri videoUri, List<SubtitleEntry> subtitles, boolean burnSubtitles, String fontName,
+                                         ShortsSubtitleStyle shortsStyle, VideoExportCallback callback) {
+        exportVideoWithSubtitles(videoUri, subtitles, burnSubtitles, fontName, shortsStyle, false, callback);
+    }
+
+    public void exportVideoWithSubtitles(Uri videoUri, List<SubtitleEntry> subtitles, boolean burnSubtitles, String fontName,
+                                         ShortsSubtitleStyle shortsStyle, boolean forceMp4SoftSubtitles,
+                                         VideoExportCallback callback) {
+        exportVideoWithSubtitles(videoUri, subtitles, burnSubtitles, fontName, shortsStyle,
+                forceMp4SoftSubtitles, null, callback);
+    }
+
+    public void exportVideoWithSubtitles(Uri videoUri, List<SubtitleEntry> subtitles, boolean burnSubtitles, String fontName,
+                                         ShortsSubtitleStyle shortsStyle, boolean forceMp4SoftSubtitles,
+                                         File outputDir, VideoExportCallback callback) {
         executorService.execute(() -> {
-            File srtFile = null;
+            File subtitleFile = null;
             try {
                 setupFontDirectories();
+                File exportDir = resolveOutputDir(outputDir);
 
-                srtFile = new File(context.getCacheDir(), "temp_subtitles.srt");
-                FileOutputStream fos = new FileOutputStream(srtFile);
-                writeSrtSubtitles(subtitles, fos);
+                boolean styledShorts = shortsStyle != null && (!forceMp4SoftSubtitles || burnSubtitles);
+                subtitleFile = new File(context.getCacheDir(), styledShorts ? "temp_subtitles.ass" : "temp_subtitles.srt");
+                FileOutputStream fos = new FileOutputStream(subtitleFile);
+                if (styledShorts) {
+                    writeAssSubtitles(subtitles, fos, shortsStyle, fontName == null ? "RobotoRegular" : fontName);
+                } else {
+                    writeSrtSubtitles(subtitles, fos);
+                }
                 fos.close();
 
 //                logSrtFileContents(srtFile);
 
                 String videoName = getVideoNameFromUri(videoUri);
-                String baseName = videoName + (burnSubtitles ? "_hard_subtitles" : "_soft_subtitles");
-                String uniqueFileName = getUniqueFileName(ApplicationPath.applicationPath(context), baseName, "mp4");
+                String outputExtension = styledShorts && !burnSubtitles && !forceMp4SoftSubtitles ? "mkv" : "mp4";
+                String uniqueFileName = buildExportFileName(burnSubtitles ? "hard-subtitles" : "soft-subtitles",
+                        videoName, outputExtension);
                 Log.d(TAG,"File Name:" + uniqueFileName);
-                File outputFile = new File(ApplicationPath.applicationPath(context), uniqueFileName);
+                File outputFile = new File(exportDir, uniqueFileName);
+                if (outputFile.exists()) {
+                    callback.onError("Already exported this video with this model: " + outputFile.getName());
+                    return;
+                }
 
                 String inputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri);
                 String outputPath = outputFile.getAbsolutePath();
-                String subtitlePath = srtFile.getAbsolutePath();
+                String subtitlePath = subtitleFile.getAbsolutePath();
 
                 String command;
-                if (burnSubtitles) {
+                if (styledShorts && burnSubtitles) {
+                    command = String.format("-i %s -vf ass=%s -q:v 1 -c:a copy %s",
+                            inputPath, subtitlePath, outputPath);
+                } else if (styledShorts) {
+                    command = String.format("-i %s -i %s -c copy -c:s ass %s",
+                            inputPath, subtitlePath, outputPath);
+                } else if (burnSubtitles) {
 //                    command = String.format("-i %s -vf subtitles=%s:force_style='FontName=%s' -c:v mpeg4 -c:a copy %s",
 //                            inputPath, subtitlePath, fontName, outputPath);
                      command = String.format("-i %s -vf subtitles=%s:force_style='FontName=%s' -q:v 1 -c:a copy %s",
@@ -430,12 +615,14 @@ public class SubtitleGenerator {
 //                    );
 
                 } else {
-                    command = String.format("-i %s -i %s -c copy -c:s mov_text -metadata:s:s:0 language=eng %s",
-                            inputPath, subtitlePath, outputPath);
+                    String subtitleLanguage = currentModelInfo != null ? currentModelInfo.getSubtitleLanguageCode() : "und";
+                    command = String.format("-i %s -i %s -c copy -c:s mov_text -metadata:s:s:0 language=%s %s",
+                            inputPath, subtitlePath, subtitleLanguage, outputPath);
                 }
 
                 Log.d(TAG, "Executing FFmpeg command: " + command);
 
+                callback.onProgressUpdate(-1);
                 FFmpegSession session = FFmpegKit.execute(command);
 
                 if (ReturnCode.isSuccess(session.getReturnCode())) {
@@ -450,11 +637,145 @@ public class SubtitleGenerator {
                 Log.e(TAG, "Error exporting video with subtitles", e);
                 callback.onError("Error exporting video: " + e.getMessage());
             } finally {
-                if (srtFile != null && srtFile.exists()) {
-                    srtFile.delete();
+                if (subtitleFile != null && subtitleFile.exists()) {
+                    subtitleFile.delete();
                 }
             }
         });
+    }
+
+    private File resolveOutputDir(File outputDir) throws IOException {
+        File exportDir = outputDir == null
+                ? new File(ApplicationPath.applicationPath(context))
+                : outputDir;
+        if (!exportDir.isDirectory() && !exportDir.mkdirs()) {
+            throw new IOException("Could not create export folder");
+        }
+        return exportDir;
+    }
+
+    private void writeAssSubtitles(List<SubtitleEntry> subtitles, FileOutputStream fos,
+                                   ShortsSubtitleStyle style, String fontName) throws IOException {
+        try (Writer writer = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
+            int playResX = style.isVerticalVideo() ? 1080 : 1920;
+            int playResY = style.isVerticalVideo() ? 1920 : 1080;
+            int x = Math.round(style.getX() * playResX);
+            int y = Math.round(style.getY() * playResY);
+            int fontSize = Math.max(16, Math.round(style.getTextSizeSp() * 2.4f));
+
+            writer.write("[Script Info]\n");
+            writer.write("ScriptType: v4.00+\n");
+            writer.write("WrapStyle: 2\n");
+            writer.write("ScaledBorderAndShadow: yes\n");
+            writer.write("PlayResX: " + playResX + "\n");
+            writer.write("PlayResY: " + playResY + "\n\n");
+            writer.write("[V4+ Styles]\n");
+            writer.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
+            writer.write(String.format(Locale.US,
+                    "Style: Default,%s,%d,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,5,0,0,0,1\n\n",
+                    fontName, fontSize));
+            writer.write("[Events]\n");
+            writer.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+
+            for (SubtitleEntry entry : subtitles) {
+                if (style.isWordByWord() && entry.getWords() != null && !entry.getWords().isEmpty()) {
+                    for (WordTiming word : entry.getWords()) {
+                        writeAssDialogue(writer, word.getStartMs(), word.getEndMs(), word.getWord(), style, x, y);
+                    }
+                } else {
+                    writeAssDialogue(writer, parseSubtitleTime(entry.getStartTime()), parseSubtitleTime(entry.getEndTime()),
+                            entry.getText(), style, x, y);
+                }
+            }
+        }
+    }
+
+    private void writeAssDialogue(Writer writer, long startMs, long endMs, String text,
+                                  ShortsSubtitleStyle style, int x, int y) throws IOException {
+        if (endMs <= startMs || text == null || text.trim().isEmpty()) {
+            return;
+        }
+        String displayText = style.isUppercase() ? text.toUpperCase(Locale.getDefault()) : text;
+        writer.write(String.format(Locale.US, "Dialogue: 0,%s,%s,Default,,0,0,0,,{\\pos(%d,%d)}%s\n",
+                formatAssTime(startMs), formatAssTime(endMs), x, y, escapeAssText(displayText)));
+    }
+
+    private long parseSubtitleTime(String timeString) {
+        String[] parts = timeString.split("[:,]");
+        return Long.parseLong(parts[0]) * 3600000L +
+                Long.parseLong(parts[1]) * 60000L +
+                Long.parseLong(parts[2]) * 1000L +
+                Long.parseLong(parts[3]);
+    }
+
+    private String formatAssTime(long timeMs) {
+        long hours = timeMs / 3600000;
+        long minutes = (timeMs % 3600000) / 60000;
+        long seconds = (timeMs % 60000) / 1000;
+        long centiseconds = (timeMs % 1000) / 10;
+        return String.format(Locale.US, "%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
+    }
+
+    private String escapeAssText(String text) {
+        return text.replace("\\", "\\\\")
+                .replace("{", "\\{")
+                .replace("}", "\\}")
+                .replace("\n", "\\N");
+    }
+
+    public static class ShortsSubtitleStyle {
+        private final float x;
+        private final float y;
+        private final float textSizeSp;
+        private final boolean uppercase;
+        private final boolean wordByWord;
+        private final boolean verticalVideo;
+
+        public ShortsSubtitleStyle(float x, float y, float textSizeSp, boolean uppercase) {
+            this(x, y, textSizeSp, uppercase, true, true);
+        }
+
+        public ShortsSubtitleStyle(float x, float y, float textSizeSp, boolean uppercase, boolean wordByWord) {
+            this(x, y, textSizeSp, uppercase, wordByWord, true);
+        }
+
+        public ShortsSubtitleStyle(float x, float y, float textSizeSp, boolean uppercase, boolean wordByWord, boolean verticalVideo) {
+            this.x = clamp01(x);
+            this.y = clamp01(y);
+            this.textSizeSp = textSizeSp;
+            this.uppercase = uppercase;
+            this.wordByWord = wordByWord;
+            this.verticalVideo = verticalVideo;
+        }
+
+        public float getX() {
+            return x;
+        }
+
+        public float getY() {
+            return y;
+        }
+
+        public float getTextSizeSp() {
+            return textSizeSp;
+        }
+
+        public boolean isUppercase() {
+            return uppercase;
+        }
+
+        public boolean isWordByWord() {
+            return wordByWord;
+        }
+
+        public boolean isVerticalVideo() {
+            return verticalVideo;
+        }
+
+        private static float clamp01(float value) {
+            if (Float.isNaN(value)) return 0.5f;
+            return Math.max(0f, Math.min(1f, value));
+        }
     }
 
     public interface VideoExportCallback {
@@ -508,22 +829,50 @@ public class SubtitleGenerator {
 //    }
 
 
-    private String getUniqueFileName(String baseDir, String baseName, String extension) {
-        baseName = baseName.replace(" ", "_");
-        
-        File file = new File(baseDir, baseName + "." + extension);
-        if (!file.exists()) {
-            return baseName + "." + extension;
-        }
+    private String buildExportFileName(String exportKind, String videoName, String extension) {
+        return "(" + shortExportKind(exportKind) + "-" + slug(modelSlug()) + ")_"
+                + slug(videoName) + "." + extension;
+    }
 
-        int counter = 1;
-        while (true) {
-            String newName = baseName + "_" + counter + "." + extension;
-            file = new File(baseDir, newName);
-            if (!file.exists()) {
-                return newName;
+    private String shortExportKind(String exportKind) {
+        String slug = slug(exportKind);
+        if ("hard-subtitles".equals(slug)) return "hard";
+        if ("soft-subtitles".equals(slug)) return "soft";
+        if ("srt-subtitles".equals(slug)) return "srt";
+        if ("vtt-subtitles".equals(slug)) return "vtt";
+        return slug;
+    }
+
+    private String modelSlug() {
+        if (currentModelInfo == null) {
+            return "model";
+        }
+        String locale = currentModelInfo.getLocale();
+        if (locale != null && !locale.trim().isEmpty()) {
+            return locale;
+        }
+        String id = currentModelInfo.getId();
+        if (id == null || id.trim().isEmpty()) {
+            return "model";
+        }
+        return id;
+    }
+
+    private String slug(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase(Locale.US);
+        normalized = normalized.replaceAll("[^a-z0-9]+", "-");
+        normalized = normalized.replaceAll("(^-+|-+$)", "");
+        return normalized.isEmpty() ? "export" : normalized;
+    }
+
+    private void copyFile(File src, File dst) throws IOException {
+        try (FileInputStream inStream = new FileInputStream(src);
+             FileOutputStream outStream = new FileOutputStream(dst)) {
+            byte[] buffer = new byte[1024 * 4];
+            int length;
+            while ((length = inStream.read(buffer)) > 0) {
+                outStream.write(buffer, 0, length);
             }
-            counter++;
         }
     }
 }

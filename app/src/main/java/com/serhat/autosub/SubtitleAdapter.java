@@ -1,6 +1,5 @@
 package com.serhat.autosub;
 
-import android.graphics.Color;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -125,9 +124,9 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
         } else {
             if (payloads.contains("selection")) {
                 holder.itemView.setActivated(selectedPositions.contains(position));
-                holder.itemView.setBackgroundColor(selectedPositions.contains(position) ? 
-                    holder.itemView.getContext().getResources().getColor(R.color.selected_subtitle) : 
-                    Color.TRANSPARENT);
+                holder.itemView.setBackgroundColor(selectedPositions.contains(position) ?
+                    holder.itemView.getContext().getResources().getColor(R.color.selected_subtitle) :
+                    holder.itemView.getContext().getResources().getColor(R.color.subtitle_item_background));
             }
         }
     }
@@ -197,13 +196,13 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
             textTV.setText(entry.getText());
             
             if (isSelectionMode) {
-                itemView.setBackgroundColor(isSelected ? 
+                itemView.setBackgroundColor(isSelected ?
                     itemView.getContext().getResources().getColor(R.color.selected_subtitle,itemView.getContext().getTheme()) :
-                    Color.TRANSPARENT);
+                    itemView.getContext().getResources().getColor(R.color.subtitle_item_background,itemView.getContext().getTheme()));
             } else {
-                itemView.setBackgroundColor(isHighlighted ? 
+                itemView.setBackgroundColor(isHighlighted ?
                     itemView.getContext().getResources().getColor(R.color.highlighted_subtitle,itemView.getContext().getTheme()) :
-                    Color.TRANSPARENT);
+                    itemView.getContext().getResources().getColor(R.color.subtitle_item_background,itemView.getContext().getTheme()));
             }
 
             itemView.setActivated(isSelected);

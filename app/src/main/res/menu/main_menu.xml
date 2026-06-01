@@ -4,14 +4,20 @@
 
     <item
         android:id="@+id/select_video_menu"
-        android:title="Select Video"
+        android:icon="@drawable/ri_video_add_line"
+        android:title="Add Videos"
         app:showAsAction="always"
         android:visible="false"/>
 
+    <item
+        android:id="@+id/manage_models_menu"
+        android:icon="@drawable/ri_download_line"
+        android:title="Models"
+        app:showAsAction="ifRoom" />
 
     <item
         android:id="@+id/open_project_menu"
-        android:icon="@drawable/github_fill"
+        android:icon="@drawable/ri_github_line"
         android:title="See on GitHub"
         app:showAsAction="ifRoom"/>
 
