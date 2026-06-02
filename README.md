@@ -27,6 +27,9 @@ Auto Subtitle Generator is an Android app for creating, editing, and exporting s
 | --- | --- |
 | <img width="270" height="600" alt="Screenshot_20260602_002525" src="https://github.com/user-attachments/assets/3ba347db-fd3d-4073-9e75-fdbc7a75136e" /> | <img width="270" height="600" alt="Screenshot_20260602_002536" src="https://github.com/user-attachments/assets/6e5429ef-df4b-4024-b675-aec1d40b6040" /> |
 
+## Install APK
+You can find the latest releases with apk files here: https://github.com/Serkali-sudo/auto-subtitle-generator/releases
+
 ## Features
 
 ### Local subtitle generation
