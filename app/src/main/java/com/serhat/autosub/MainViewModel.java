@@ -53,6 +53,13 @@ public class MainViewModel extends AndroidViewModel {
     private static final String KEY_SHORTS_DONT_SHOW_AGAIN = "shorts_dont_show_again";
     private static final String KEY_SHORTS_MODE_WORD_BY_WORD = "shorts_mode_word_by_word";
     private static final String KEY_BATCH_FORMAT = "batch_format";
+    private static final String KEY_SUBTITLE_MAX_LENGTH = "subtitle_max_length";
+    private static final String KEY_KEEP_SENTENCES_TOGETHER = "keep_sentences_together";
+    private static final String KEY_SUPPRESS_WHISPER_SDH = "suppress_whisper_sdh";
+    private static final String KEY_WHISPER_LANGUAGE = "whisper_language";
+    private static final String KEY_TRANSLATE_SUBTITLES = "translate_subtitles";
+    private static final String KEY_TRANSLATION_SOURCE_LANGUAGE = "translation_source_language";
+    private static final String KEY_TRANSLATION_TARGET_LANGUAGE = "translation_target_language";
     private static final String KEY_SHOW_COMPLETION_NOTIFICATIONS = "show_completion_notifications";
     private static final String KEY_SHOW_RAM_USAGE = "show_ram_usage";
     private final android.content.SharedPreferences settingsPrefs;
@@ -87,6 +94,13 @@ public class MainViewModel extends AndroidViewModel {
 
     // --- Settings States ---
     private final MutableLiveData<String> batchFormat = new MutableLiveData<>("srt");
+    private final MutableLiveData<Integer> subtitleMaxLength = new MutableLiveData<>(SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH);
+    private final MutableLiveData<Boolean> keepSentencesTogether = new MutableLiveData<>(SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER);
+    private final MutableLiveData<Boolean> suppressWhisperSdh = new MutableLiveData<>(true);
+    private final MutableLiveData<String> whisperLanguage = new MutableLiveData<>("auto");
+    private final MutableLiveData<Boolean> translateSubtitles = new MutableLiveData<>(false);
+    private final MutableLiveData<String> translationSourceLanguage = new MutableLiveData<>("auto");
+    private final MutableLiveData<String> translationTargetLanguage = new MutableLiveData<>("en");
     private final MutableLiveData<Float> shortsCaptionSize = new MutableLiveData<>(30f);
     private final MutableLiveData<Boolean> shortsUppercase = new MutableLiveData<>(true);
     private final MutableLiveData<Boolean> shortsWordByWordDefault = new MutableLiveData<>(false);
@@ -124,8 +138,16 @@ public class MainViewModel extends AndroidViewModel {
         @Override
         public void onQueueItemsChanged(List<QueueItem> items) {
             handler.post(() -> {
-                queueItems.setValue(new ArrayList<>(items));
-                syncSelectedQueueItemFrom(items);
+                List<QueueItem> visibleItems = new ArrayList<>();
+                if (items != null) {
+                    for (QueueItem item : items) {
+                        if (!isRemovedActiveQueueItem(item)) {
+                            visibleItems.add(item);
+                        }
+                    }
+                }
+                queueItems.setValue(visibleItems);
+                syncSelectedQueueItemFrom(visibleItems);
             });
         }
 
@@ -279,6 +301,13 @@ public class MainViewModel extends AndroidViewModel {
     public LiveData<Float> getSubtitleCaptionScale() { return subtitleCaptionScale; }
     
     public LiveData<String> getBatchFormat() { return batchFormat; }
+    public LiveData<Integer> getSubtitleMaxLength() { return subtitleMaxLength; }
+    public LiveData<Boolean> getKeepSentencesTogether() { return keepSentencesTogether; }
+    public LiveData<Boolean> getSuppressWhisperSdh() { return suppressWhisperSdh; }
+    public LiveData<String> getWhisperLanguage() { return whisperLanguage; }
+    public LiveData<Boolean> getTranslateSubtitles() { return translateSubtitles; }
+    public LiveData<String> getTranslationSourceLanguage() { return translationSourceLanguage; }
+    public LiveData<String> getTranslationTargetLanguage() { return translationTargetLanguage; }
     public LiveData<Float> getShortsCaptionSize() { return shortsCaptionSize; }
     public LiveData<Boolean> getShortsUppercase() { return shortsUppercase; }
     public LiveData<Boolean> getShortsWordByWordDefault() { return shortsWordByWordDefault; }
@@ -294,6 +323,26 @@ public class MainViewModel extends AndroidViewModel {
 
     private void loadSettings() {
         batchFormat.setValue(settingsPrefs.getString(KEY_BATCH_FORMAT, "srt"));
+        int maxLength = settingsPrefs.getInt(KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH);
+        subtitleMaxLength.setValue(maxLength);
+        subtitleGenerator.setMaxSubtitleLength(maxLength);
+        boolean savedKeepSentencesTogether = settingsPrefs.getBoolean(
+                KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER);
+        keepSentencesTogether.setValue(savedKeepSentencesTogether);
+        subtitleGenerator.setKeepSentencesTogether(savedKeepSentencesTogether);
+        boolean suppressSdh = settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true);
+        suppressWhisperSdh.setValue(suppressSdh);
+        subtitleGenerator.setSuppressWhisperSdh(suppressSdh);
+        String savedWhisperLanguage = settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto");
+        whisperLanguage.setValue(savedWhisperLanguage);
+        subtitleGenerator.setWhisperLanguage(savedWhisperLanguage);
+        boolean savedTranslateSubtitles = settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false);
+        String savedTranslationSource = settingsPrefs.getString(KEY_TRANSLATION_SOURCE_LANGUAGE, "auto");
+        String savedTranslationTarget = settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE, "en");
+        translateSubtitles.setValue(savedTranslateSubtitles);
+        translationSourceLanguage.setValue(savedTranslationSource);
+        translationTargetLanguage.setValue(savedTranslationTarget);
+        subtitleGenerator.setTranslationSettings(savedTranslateSubtitles, savedTranslationSource, savedTranslationTarget);
         shortsWordByWordDefault.setValue(settingsPrefs.getBoolean(KEY_SHORTS_MODE_WORD_BY_WORD, false));
         skipShortsDialog.setValue(settingsPrefs.getBoolean(KEY_SHORTS_DONT_SHOW_AGAIN, false));
         showCompletionNotifications.setValue(settingsPrefs.getBoolean(KEY_SHOW_COMPLETION_NOTIFICATIONS, true));
@@ -313,6 +362,73 @@ public class MainViewModel extends AndroidViewModel {
         batchFormat.setValue(format);
         settingsPrefs.edit().putString(KEY_BATCH_FORMAT, format == null ? "srt" : format).apply();
         refreshQueue();
+    }
+
+    public void setSubtitleMaxLength(int maxLength) {
+        int boundedLength = Math.max(SubtitleGenerator.MIN_SUBTITLE_LENGTH,
+                Math.min(SubtitleGenerator.MAX_SUBTITLE_LENGTH_LIMIT, maxLength));
+        subtitleMaxLength.setValue(boundedLength);
+        subtitleGenerator.setMaxSubtitleLength(boundedLength);
+        settingsPrefs.edit().putInt(KEY_SUBTITLE_MAX_LENGTH, boundedLength).apply();
+    }
+
+    public void setKeepSentencesTogether(boolean keepTogether) {
+        keepSentencesTogether.setValue(keepTogether);
+        subtitleGenerator.setKeepSentencesTogether(keepTogether);
+        settingsPrefs.edit().putBoolean(KEY_KEEP_SENTENCES_TOGETHER, keepTogether).apply();
+    }
+
+    public void setSuppressWhisperSdh(boolean suppress) {
+        suppressWhisperSdh.setValue(suppress);
+        subtitleGenerator.setSuppressWhisperSdh(suppress);
+        settingsPrefs.edit().putBoolean(KEY_SUPPRESS_WHISPER_SDH, suppress).apply();
+    }
+
+    public void setWhisperLanguage(String language) {
+        String normalizedLanguage = language == null || language.trim().isEmpty()
+                ? "auto"
+                : language.trim().toLowerCase(Locale.US);
+        whisperLanguage.setValue(normalizedLanguage);
+        subtitleGenerator.setWhisperLanguage(normalizedLanguage);
+        settingsPrefs.edit().putString(KEY_WHISPER_LANGUAGE, normalizedLanguage).apply();
+    }
+
+    public void setTranslateSubtitles(boolean enabled) {
+        translateSubtitles.setValue(enabled);
+        subtitleGenerator.setTranslationSettings(enabled,
+                getLiveDataValue(translationSourceLanguage, "auto"),
+                getLiveDataValue(translationTargetLanguage, "en"));
+        settingsPrefs.edit().putBoolean(KEY_TRANSLATE_SUBTITLES, enabled).apply();
+    }
+
+    public void setTranslationSourceLanguage(String language) {
+        String normalizedLanguage = normalizeTranslationLanguage(language, "auto");
+        translationSourceLanguage.setValue(normalizedLanguage);
+        subtitleGenerator.setTranslationSettings(Boolean.TRUE.equals(translateSubtitles.getValue()),
+                normalizedLanguage,
+                getLiveDataValue(translationTargetLanguage, "en"));
+        settingsPrefs.edit().putString(KEY_TRANSLATION_SOURCE_LANGUAGE, normalizedLanguage).apply();
+    }
+
+    public void setTranslationTargetLanguage(String language) {
+        String normalizedLanguage = normalizeTranslationLanguage(language, "en");
+        translationTargetLanguage.setValue(normalizedLanguage);
+        subtitleGenerator.setTranslationSettings(Boolean.TRUE.equals(translateSubtitles.getValue()),
+                getLiveDataValue(translationSourceLanguage, "auto"),
+                normalizedLanguage);
+        settingsPrefs.edit().putString(KEY_TRANSLATION_TARGET_LANGUAGE, normalizedLanguage).apply();
+    }
+
+    private String normalizeTranslationLanguage(String language, String fallback) {
+        if (language == null || language.trim().isEmpty()) {
+            return fallback;
+        }
+        return language.trim().toLowerCase(Locale.US);
+    }
+
+    private <T> T getLiveDataValue(MutableLiveData<T> liveData, T fallback) {
+        T value = liveData.getValue();
+        return value == null ? fallback : value;
     }
 
     public void setShortsCaptionSize(float size) {
@@ -531,7 +647,7 @@ public class MainViewModel extends AndroidViewModel {
             callback.onProbeError("Wait for current generation to finish before switching models");
             return;
         }
-        if (modelInfo.isVeryLarge() || !modelInfo.isMobileRecommended()) {
+        if (!modelInfo.isWhisper() && (modelInfo.isVeryLarge() || !modelInfo.isMobileRecommended())) {
             if (modelManager.shouldUseCompatibilityMode(modelInfo)) {
                 callback.onProbeError("ASK_COMPATIBILITY"); // Signal back to Fragment to show dialog
                 return;
@@ -543,7 +659,7 @@ public class MainViewModel extends AndroidViewModel {
     }
 
     public void selectModelInCompatibilityMode(VoskModelInfo modelInfo) {
-        selectModelInLoadMode(modelInfo, VoskModelManager.ModelLoadMode.LEGACY_COMPATIBILITY);
+        selectModelInLoadMode(modelInfo, VoskModelManager.ModelLoadMode.COMPATIBILITY);
     }
 
     public void selectModelInLoadMode(VoskModelInfo modelInfo, VoskModelManager.ModelLoadMode loadMode) {
@@ -962,6 +1078,16 @@ public class MainViewModel extends AndroidViewModel {
         boolean isShorts = queueItem.isShortsVideo();
         boolean useWordByWord = isShorts && settingsPrefs.getBoolean(KEY_SHORTS_MODE_WORD_BY_WORD, false);
         subtitleGenerator.setWordByWordMode(useWordByWord);
+        subtitleGenerator.setMaxSubtitleLength(settingsPrefs.getInt(
+                KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH));
+        subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
+                KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
+        subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));
+        subtitleGenerator.setWhisperLanguage(settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto"));
+        subtitleGenerator.setTranslationSettings(
+                settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false),
+                settingsPrefs.getString(KEY_TRANSLATION_SOURCE_LANGUAGE, "auto"),
+                settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE, "en"));
 
         subtitleGenerator.generateSubtitles(queueItem.getVideoUri(), permanentAudioPath, new SubtitleGenerator.SubtitleGenerationCallback() {
             @Override
@@ -1065,11 +1191,7 @@ public class MainViewModel extends AndroidViewModel {
                     if (isRemovedActiveQueueItem(queueItem)) {
                         return;
                     }
-                    if (progress < 0) {
-                        queueItem.setMessage("Extracting audio...");
-                    } else if (queueItem.getStatus() == QueueItem.Status.PROCESSING) {
-                        queueItem.setMessage("Generating subtitles...");
-                    }
+                    queueItem.setMessage(subtitleProgressMessage(progress));
                     queueItem.setProgress(progress);
                     refreshQueue();
 
@@ -1077,7 +1199,7 @@ public class MainViewModel extends AndroidViewModel {
                             getApplication(),
                             2001,
                             "Generating Subtitles: " + queueItem.getDisplayName(),
-                            progress < 0 ? "Extracting audio..." : "Generating subtitles... " + progress + "%",
+                            progress < 0 ? subtitleProgressMessage(progress) : subtitleProgressMessage(progress) + " " + progress + "%",
                             progress
                     );
                 });
@@ -1101,6 +1223,22 @@ public class MainViewModel extends AndroidViewModel {
         });
     }
 
+    private String subtitleProgressMessage(int progress) {
+        if (progress == SubtitleGenerator.PROGRESS_TRANSLATING) {
+            return "Translating subtitles...";
+        }
+        if (progress == SubtitleGenerator.PROGRESS_DETECTING_LANGUAGE) {
+            return "Detecting language...";
+        }
+        if (progress == SubtitleGenerator.PROGRESS_PREPARING_AUDIO) {
+            return "Preparing audio...";
+        }
+        if (progress < 0) {
+            return "Extracting audio...";
+        }
+        return "Generating subtitles...";
+    }
+
     public void cancelCurrentQueueItem() {
         if (useTaskService()) {
             runWhenTaskServiceReady(false, () -> taskService.cancelCurrentQueueItem());
@@ -1109,6 +1247,18 @@ public class MainViewModel extends AndroidViewModel {
         if (activeQueueItem != null) {
             queueCancelRequested = true;
             subtitleGenerator.cancelGeneration();
+            if (isRemovedActiveQueueItem(activeQueueItem)) {
+                finishRemovedActiveQueueItem(activeQueueItem);
+            } else {
+                activeQueueItem.setStatus(QueueItem.Status.CANCELLED);
+                activeQueueItem.setMessage("Cancelled");
+                activeQueueItem.setProgress(0);
+                queueStore.updateItem(activeQueueItem);
+                activeQueueItem = null;
+                queueCancelRequested = false;
+                queueRunning.setValue(false);
+                refreshQueue();
+            }
         }
     }
 
@@ -1132,10 +1282,6 @@ public class MainViewModel extends AndroidViewModel {
                 || item.getStatus() == QueueItem.Status.PROCESSING;
         if (removingActiveItem) {
             removedActiveQueueItemIds.add(item.getId());
-            runWhenTaskServiceReady(false, () -> {
-                taskService.addRemovedActiveQueueItemId(item.getId());
-                taskService.cancelCurrentQueueItem();
-            });
         }
 
         List<QueueItem> current = queueItems.getValue();
@@ -1147,7 +1293,12 @@ public class MainViewModel extends AndroidViewModel {
         if (item == selectedQueueItem.getValue()) {
             clearPreview();
         }
-        if (!removingActiveItem) {
+        if (removingActiveItem) {
+            runWhenTaskServiceReady(false, () -> {
+                taskService.addRemovedActiveQueueItemId(item.getId());
+                taskService.cancelCurrentQueueItem();
+            });
+        } else {
             refreshQueue();
         }
     }
@@ -1156,6 +1307,7 @@ public class MainViewModel extends AndroidViewModel {
         List<QueueItem> current = queueItems.getValue();
         if (current != null) {
             List<QueueItem> toRemove = new ArrayList<>();
+            List<Long> removedActiveIds = new ArrayList<>();
             boolean removingActiveItem = false;
             for (QueueItem item : current) {
                 if (item.isSelected()) {
@@ -1167,7 +1319,7 @@ public class MainViewModel extends AndroidViewModel {
                     if (isSameQueueItem(item, activeQueueItem) || item.getStatus() == QueueItem.Status.PROCESSING) {
                         removingActiveItem = true;
                         removedActiveQueueItemIds.add(item.getId());
-                        runWhenTaskServiceReady(false, () -> taskService.addRemovedActiveQueueItemId(item.getId()));
+                        removedActiveIds.add(item.getId());
                     }
                     removeQueueItemFromList(current, item);
                     queueStore.deleteItem(item.getId());
@@ -1177,7 +1329,12 @@ public class MainViewModel extends AndroidViewModel {
                 }
                 queueItems.setValue(new ArrayList<>(current));
                 if (removingActiveItem) {
-                    runWhenTaskServiceReady(false, () -> taskService.cancelCurrentQueueItem());
+                    runWhenTaskServiceReady(false, () -> {
+                        for (Long id : removedActiveIds) {
+                            taskService.addRemovedActiveQueueItemId(id);
+                        }
+                        taskService.cancelCurrentQueueItem();
+                    });
                     return;
                 }
             }

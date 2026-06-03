@@ -191,6 +191,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
         subtitleAdapter.setOnItemLongClickListener(this::startSelectionMode);
 
         binding.recyclerView.setLayoutManager(new LinearLayoutManager(requireContext()));
+        binding.recyclerView.setItemAnimator(null);
         binding.recyclerView.setAdapter(subtitleAdapter);
     }
 

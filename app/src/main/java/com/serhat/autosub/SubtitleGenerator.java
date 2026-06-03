@@ -1,6 +1,7 @@
 package com.serhat.autosub;
 
 import android.content.Context;
+
 import android.net.Uri;
 import android.util.Log;
 
@@ -8,6 +9,14 @@ import com.arthenica.ffmpegkit.FFmpegKit;
 import com.arthenica.ffmpegkit.FFmpegSession;
 import com.arthenica.ffmpegkit.ReturnCode;
 import com.arthenica.ffmpegkit.FFmpegKitConfig;
+import com.google.android.gms.tasks.Tasks;
+import com.google.mlkit.common.model.DownloadConditions;
+import com.google.mlkit.nl.translate.TranslateLanguage;
+import com.google.mlkit.nl.translate.Translation;
+import com.google.mlkit.nl.translate.Translator;
+import com.google.mlkit.nl.translate.TranslatorOptions;
+import com.whispercpp.whisper.WhisperCallback;
+import com.whispercpp.whisper.WhisperContext;
 
 import org.json.JSONObject;
 import org.vosk.LibVosk;
@@ -36,19 +45,72 @@ import java.util.Collections;
 
 public class SubtitleGenerator {
     private static final String TAG = "SubtitleGenerator";
+    private static final boolean VERBOSE_SUBTITLE_LOGS = false;
+    private static final long PARTIAL_UI_UPDATE_INTERVAL_MS = 1000;
+    private static final long PROGRESS_UI_UPDATE_INTERVAL_MS = 1000;
+    private static final int PROGRESS_UI_UPDATE_STEP = 5;
+    public static final int PROGRESS_EXTRACTING_AUDIO = -1;
+    public static final int PROGRESS_PREPARING_AUDIO = -2;
+    public static final int PROGRESS_DETECTING_LANGUAGE = -3;
+    public static final int PROGRESS_TRANSLATING = -4;
+    public static final int DEFAULT_MAX_SUBTITLE_LENGTH = 42;
+    public static final int MIN_SUBTITLE_LENGTH = 24;
+    public static final int MAX_SUBTITLE_LENGTH_LIMIT = 96;
+    public static final boolean DEFAULT_KEEP_SENTENCES_TOGETHER = true;
     private final Context context;
     private volatile Model model;
+    private volatile WhisperContext whisperContext;
     private final Object modelLock = new Object();
     private long currentLoadSessionId = 0;
     private VoskModelInfo currentModelInfo;
     private final ExecutorService executorService;
-    private static final int MAX_SUBTITLE_LENGTH = 42; 
     private volatile boolean isCancelled = false;
     private File audioFile;
     private boolean wordByWordMode = false;
+    private volatile int maxSubtitleLength = DEFAULT_MAX_SUBTITLE_LENGTH;
+    private volatile boolean keepSentencesTogether = DEFAULT_KEEP_SENTENCES_TOGETHER;
+    private volatile boolean suppressWhisperSdh = true;
+    private volatile String whisperLanguage = "auto";
+    private volatile boolean translationEnabled = false;
+    private volatile String translationSourceLanguage = "auto";
+    private volatile String translationTargetLanguage = "en";
 
     public void setWordByWordMode(boolean enabled) {
         this.wordByWordMode = enabled;
+    }
+
+    public void setMaxSubtitleLength(int maxSubtitleLength) {
+        this.maxSubtitleLength = Math.max(MIN_SUBTITLE_LENGTH,
+                Math.min(MAX_SUBTITLE_LENGTH_LIMIT, maxSubtitleLength));
+    }
+
+    public void setKeepSentencesTogether(boolean keepSentencesTogether) {
+        this.keepSentencesTogether = keepSentencesTogether;
+    }
+
+    public void setSuppressWhisperSdh(boolean suppressWhisperSdh) {
+        this.suppressWhisperSdh = suppressWhisperSdh;
+    }
+
+    public void setWhisperLanguage(String whisperLanguage) {
+        if (whisperLanguage == null || whisperLanguage.trim().isEmpty()) {
+            this.whisperLanguage = "auto";
+            return;
+        }
+        this.whisperLanguage = whisperLanguage.trim().toLowerCase(Locale.US);
+    }
+
+    public void setTranslationSettings(boolean enabled, String sourceLanguage, String targetLanguage) {
+        this.translationEnabled = enabled;
+        this.translationSourceLanguage = normalizeLanguageSetting(sourceLanguage, "auto");
+        this.translationTargetLanguage = normalizeLanguageSetting(targetLanguage, "en");
+    }
+
+    private String normalizeLanguageSetting(String language, String fallback) {
+        if (language == null || language.trim().isEmpty()) {
+            return fallback;
+        }
+        return language.trim().toLowerCase(Locale.US);
     }
 
     public SubtitleGenerator(Context context) {
@@ -72,23 +134,67 @@ public class SubtitleGenerator {
         Log.d(TAG, "Called Model Init for " + modelInfo.getId());
 
         final long sessionId;
+        Model previousModel;
+        WhisperContext previousWhisperContext;
         synchronized (modelLock) {
             currentLoadSessionId++;
             sessionId = currentLoadSessionId;
-
-            if (this.model != null) {
-                try {
-                    this.model.close();
-                    Log.d(TAG, "Released previous native speech model C++ memory allocation");
-                } catch (Throwable e) {
-                    Log.e(TAG, "Error releasing previous model memory", e);
-                } finally {
-                    this.model = null;
-                }
-            }
+            previousModel = this.model;
+            previousWhisperContext = this.whisperContext;
+            this.model = null;
+            this.whisperContext = null;
         }
 
+        releasePreviousModel(previousModel);
+        releasePreviousWhisperContext(previousWhisperContext);
+
         currentModelInfo = modelInfo;
+
+        if (modelInfo.isWhisper()) {
+            executorService.execute(() -> {
+                try {
+                    VoskModelManager modelManager = new VoskModelManager(context);
+                    modelManager.loadCatalog();
+                    File modelDirectory = modelManager.getModelDirectory(modelInfo);
+                    File modelFile = new File(modelDirectory, modelInfo.getId() + ".bin");
+                    if (!modelFile.exists()) {
+                        synchronized (modelLock) {
+                            if (sessionId == currentLoadSessionId) {
+                                callback.onError("Model is not downloaded: " + modelInfo.getLanguage());
+                            }
+                        }
+                        return;
+                    }
+
+                    WhisperContext loadedContext = WhisperContext.createContextFromFile(modelFile.getAbsolutePath());
+
+                    synchronized (modelLock) {
+                        if (sessionId != currentLoadSessionId) {
+                            Log.d(TAG, "Obsolete Whisper model loaded for session " + sessionId + ", releasing it immediately.");
+                            try {
+                                loadedContext.release();
+                            } catch (Throwable e) {
+                                Log.e(TAG, "Error releasing obsolete Whisper context", e);
+                            }
+                            return;
+                        }
+                        this.whisperContext = loadedContext;
+                        this.currentModelInfo = modelInfo;
+                    }
+
+                    Log.d(TAG, "Whisper model initialized: " + modelInfo.getId());
+                    callback.onModelInitialized();
+                } catch (Throwable e) {
+                    Log.e(TAG, "Failed to load Whisper model", e);
+                    synchronized (modelLock) {
+                        if (sessionId == currentLoadSessionId) {
+                            callback.onError(e.getMessage() == null ? "Failed to load model" : e.getMessage());
+                        }
+                    }
+                }
+            });
+            return;
+        }
 
         if (modelInfo.isBundled()) {
             StorageService.unpack(context, modelInfo.getBundledAssetName(), "model",
@@ -168,32 +274,43 @@ public class SubtitleGenerator {
         return currentModelInfo;
     }
 
+    public void release() {
+        cancelGeneration();
+        final WhisperContext contextToRelease;
+        synchronized (modelLock) {
+            currentLoadSessionId++;
+            contextToRelease = whisperContext;
+            whisperContext = null;
+            model = null;
+            currentModelInfo = null;
+        }
+        releasePreviousWhisperContext(contextToRelease);
+        executorService.shutdown();
+    }
+
     public void cancelGeneration() {
         isCancelled = true;
         FFmpegKit.cancel();
+        if (whisperContext != null) {
+            try {
+                whisperContext.stopTranscription();
+            } catch (Throwable ignored) {}
+        }
     }
 
     public void generateSubtitles(Uri videoUri, String permanentAudioPath, SubtitleGenerationCallback callback) {
         executorService.execute(() -> {
             try {
-                if (model == null) {
+                if (model == null && whisperContext == null) {
                     callback.onError("Speech model is not ready");
                     return;
                 }
                 isCancelled = false;
                 Log.d(TAG, "Starting subtitle generation process");
-                callback.onProgressUpdate(-1);
+                callback.onProgressUpdate(PROGRESS_EXTRACTING_AUDIO);
 
                 Log.d(TAG, "Extracting audio from video");
                 audioFile = extractAudioFromVideo(videoUri);
-
-                if (permanentAudioPath != null && !permanentAudioPath.isEmpty()) {
-                    try {
-                        copyFile(audioFile, new File(permanentAudioPath));
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to copy audio permanently", e);
-                    }
-                }
 
                 if (isCancelled) {
                     callback.onCancelled();
@@ -201,12 +318,27 @@ public class SubtitleGenerator {
                 }
 
                 Log.d(TAG, "Performing speech recognition");
-                callback.onProgressUpdate(0);
+                callback.onProgressUpdate(PROGRESS_PREPARING_AUDIO);
                 List<SubtitleEntry> subtitleEntries = processAudioFile(audioFile, callback);
 
                 if (isCancelled) {
                     callback.onCancelled();
                     return;
+                }
+
+                subtitleEntries = translateSubtitlesIfNeeded(subtitleEntries, callback);
+
+                if (isCancelled) {
+                    callback.onCancelled();
+                    return;
+                }
+
+                if (permanentAudioPath != null && !permanentAudioPath.isEmpty()) {
+                    try {
+                        copyFile(audioFile, new File(permanentAudioPath));
+                    } catch (Exception e) {
+                        Log.e(TAG, "Failed to copy audio permanently", e);
+                    }
                 }
 
                 callback.onProgressUpdate(100);
@@ -247,12 +379,17 @@ public class SubtitleGenerator {
     }
 
     private List<SubtitleEntry> processAudioFile(File audioFile, SubtitleGenerationCallback callback) throws IOException {
+        if (currentModelInfo != null && currentModelInfo.isWhisper()) {
+            return processAudioFileWithWhisper(audioFile, callback);
+        }
         List<SubtitleEntry> subtitles = new ArrayList<>();
         Recognizer recognizer = null;
         
         try {
             recognizer = new Recognizer(model, 16000.0f);
             recognizer.setWords(true);
+            long[] lastPartialUpdateMs = {0};
+            callback.onProgressUpdate(0);
             
             try (FileInputStream fis = new FileInputStream(audioFile)) {
                 if (fis.skip(44) != 44) throw new IOException("Audio file too short");
@@ -262,6 +399,8 @@ public class SubtitleGenerator {
                 long totalBytes = audioFile.length() - 44;
                 long processedBytes = 0;
                 int lastReportedProgress = 0;
+                long[] lastProgressUpdateMs = {0};
+                int[] lastDispatchedProgress = {-1};
 
                 while ((bytesRead = fis.read(buffer)) != -1) {
                     if (isCancelled) {
@@ -271,14 +410,18 @@ public class SubtitleGenerator {
                     if (recognizer.acceptWaveForm(buffer, bytesRead)) {
                         String result = recognizer.getResult();
                         processRecognitionResult(result, subtitles);
-                        callback.onPartialSubtitlesGenerated(new ArrayList<>(subtitles));
+                        if (shouldDispatchPartialUpdate(lastPartialUpdateMs)) {
+                            callback.onPartialSubtitlesGenerated(new ArrayList<>(subtitles));
+                        }
                     }
 
                     processedBytes += bytesRead;
                     int currentProgress = totalBytes > 0 ? (int) (processedBytes * 100 / totalBytes) : 100;
                     if (currentProgress > lastReportedProgress) {
                         lastReportedProgress = currentProgress;
-                        callback.onProgressUpdate(currentProgress);
+                        if (shouldDispatchProgressUpdate(lastProgressUpdateMs, lastDispatchedProgress, currentProgress)) {
+                            callback.onProgressUpdate(currentProgress);
+                        }
                     }
                 }
 
@@ -297,7 +440,10 @@ public class SubtitleGenerator {
     private void processRecognitionResult(String result, List<SubtitleEntry> subtitles) {
         try {
             JSONObject jsonResult = new JSONObject(result);
-            JSONArray wordsArray = jsonResult.getJSONArray("result");
+            JSONArray wordsArray = jsonResult.optJSONArray("result");
+            if (wordsArray == null || wordsArray.length() == 0) {
+                return;
+            }
             
             StringBuilder currentSubtitle = new StringBuilder();
             List<WordTiming> currentWords = new ArrayList<>();
@@ -315,6 +461,9 @@ public class SubtitleGenerator {
                 if (wordByWordMode) {
                     List<WordTiming> singleWordList = new ArrayList<>();
                     singleWordList.add(timing);
+                    if (VERBOSE_SUBTITLE_LOGS) {
+                        Log.d(TAG, "Vosk subtitle entry (word): startMs=" + (long)(wordStart * 1000) + ", endMs=" + (long)(wordEnd * 1000) + ", text=\"" + word + "\"");
+                    }
                     subtitles.add(new SubtitleEntry(subtitles.size() + 1,
                         formatTime((long)(wordStart * 1000)),
                         formatTime((long)(wordEnd * 1000)),
@@ -325,7 +474,10 @@ public class SubtitleGenerator {
                         startTime = wordStart;
                     }
                     
-                    if (currentSubtitle.length() + word.length() + 1 > MAX_SUBTITLE_LENGTH) {
+                    if (currentSubtitle.length() + word.length() + 1 > maxSubtitleLength) {
+                        if (VERBOSE_SUBTITLE_LOGS) {
+                            Log.d(TAG, "Vosk subtitle entry: startMs=" + (long)(startTime * 1000) + ", endMs=" + (long)(endTime * 1000) + ", text=\"" + currentSubtitle.toString().trim() + "\"");
+                        }
                         subtitles.add(new SubtitleEntry(subtitles.size() + 1,
                             formatTime((long)(startTime * 1000)),
                             formatTime((long)(endTime * 1000)),
@@ -349,6 +501,9 @@ public class SubtitleGenerator {
             }
 
             if (!wordByWordMode && currentSubtitle.length() > 0) {
+                if (VERBOSE_SUBTITLE_LOGS) {
+                    Log.d(TAG, "Vosk subtitle entry (final): startMs=" + (long)(startTime * 1000) + ", endMs=" + (long)(endTime * 1000) + ", text=\"" + currentSubtitle.toString().trim() + "\"");
+                }
                 subtitles.add(new SubtitleEntry(subtitles.size() + 1,
                     formatTime((long)(startTime * 1000)),
                     formatTime((long)(endTime * 1000)),
@@ -360,18 +515,140 @@ public class SubtitleGenerator {
         }
     }
 
+    private void releasePreviousModel(Model modelToRelease) {
+        if (modelToRelease == null) {
+            return;
+        }
+        try {
+            modelToRelease.close();
+            Log.d(TAG, "Released previous native speech model C++ memory allocation");
+        } catch (Throwable e) {
+            Log.e(TAG, "Error releasing previous model memory", e);
+        }
+    }
+
+    private void releasePreviousWhisperContext(WhisperContext contextToRelease) {
+        if (contextToRelease == null) {
+            return;
+        }
+        try {
+            contextToRelease.stopTranscription();
+            contextToRelease.releaseAsync();
+            Log.d(TAG, "Queued previous Whisper model context for release");
+        } catch (Throwable e) {
+            Log.e(TAG, "Error queueing previous Whisper model context release", e);
+        }
+    }
+
+    private boolean shouldDispatchPartialUpdate(long[] lastPartialUpdateMs) {
+        long now = System.currentTimeMillis();
+        if (lastPartialUpdateMs[0] == 0 || now - lastPartialUpdateMs[0] >= PARTIAL_UI_UPDATE_INTERVAL_MS) {
+            lastPartialUpdateMs[0] = now;
+            return true;
+        }
+        return false;
+    }
+
+    private boolean shouldDispatchProgressUpdate(long[] lastProgressUpdateMs,
+                                                 int[] lastDispatchedProgress,
+                                                 int progress) {
+        if (progress < 0 || progress >= 100 || lastDispatchedProgress[0] < 0) {
+            lastProgressUpdateMs[0] = System.currentTimeMillis();
+            lastDispatchedProgress[0] = progress;
+            return true;
+        }
+
+        long now = System.currentTimeMillis();
+        if (progress - lastDispatchedProgress[0] >= PROGRESS_UI_UPDATE_STEP
+                || now - lastProgressUpdateMs[0] >= PROGRESS_UI_UPDATE_INTERVAL_MS) {
+            lastProgressUpdateMs[0] = now;
+            lastDispatchedProgress[0] = progress;
+            return true;
+        }
+
+        return false;
+    }
 
     private List<String> splitSubtitle(String text) {
         List<String> result = new ArrayList<>();
-        String[] words = text.split("\\s+");
+        List<String> sentences = splitIntoSentenceChunks(text);
         StringBuilder currentLine = new StringBuilder();
 
-        for (String word : words) {
-            if (currentLine.length() + word.length() + 1 > MAX_SUBTITLE_LENGTH) {
+        for (String sentence : sentences) {
+            if (sentence.length() > maxSubtitleLength) {
                 if (currentLine.length() > 0) {
                     result.add(currentLine.toString().trim());
                     currentLine = new StringBuilder();
                 }
+                addWrappedWords(sentence, result);
+                continue;
+            }
+
+            int nextLength = currentLine.length() == 0
+                    ? sentence.length()
+                    : currentLine.length() + 1 + sentence.length();
+            if (nextLength > maxSubtitleLength) {
+                result.add(currentLine.toString().trim());
+                currentLine = new StringBuilder(sentence);
+            } else {
+                if (currentLine.length() > 0) {
+                    currentLine.append(" ");
+                }
+                currentLine.append(sentence);
+            }
+        }
+
+        if (currentLine.length() > 0) {
+            result.add(currentLine.toString().trim());
+        }
+
+        return result;
+    }
+
+    private List<String> splitIntoSentenceChunks(String text) {
+        List<String> chunks = new ArrayList<>();
+        if (text == null || text.trim().isEmpty()) {
+            return chunks;
+        }
+
+        StringBuilder current = new StringBuilder();
+
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            current.append(c);
+
+            if (c == '.' || c == '!' || c == '?') {
+                String chunk = current.toString().trim();
+                if (!chunk.isEmpty()) {
+                    chunks.add(chunk);
+                }
+                current = new StringBuilder();
+            }
+        }
+
+        String remaining = current.toString().trim();
+        if (!remaining.isEmpty()) {
+            chunks.add(remaining);
+        }
+
+        if (chunks.isEmpty()) {
+            chunks.add(text.trim());
+        }
+
+        return chunks;
+    }
+
+    private void addWrappedWords(String text, List<String> result) {
+        String[] words = text.split("\\s+");
+        StringBuilder currentLine = new StringBuilder();
+
+        for (String word : words) {
+            int nextLength = currentLine.length() == 0
+                    ? word.length()
+                    : currentLine.length() + 1 + word.length();
+            if (nextLength > maxSubtitleLength && currentLine.length() > 0) {
+                result.add(currentLine.toString().trim());
+                currentLine = new StringBuilder();
             }
             if (currentLine.length() > 0) {
                 currentLine.append(" ");
@@ -382,8 +659,6 @@ public class SubtitleGenerator {
         if (currentLine.length() > 0) {
             result.add(currentLine.toString().trim());
         }
-
-        return result;
     }
 
     public void saveSubtitlesToFile(List<SubtitleEntry> entries, String format, Uri videoUri, SubtitleSaveCallback callback) {
@@ -874,5 +1149,497 @@ public class SubtitleGenerator {
                 outStream.write(buffer, 0, length);
             }
         }
+    }
+
+    private List<SubtitleEntry> translateSubtitlesIfNeeded(List<SubtitleEntry> subtitles,
+                                                           SubtitleGenerationCallback callback) throws IOException {
+        if (!translationEnabled || subtitles == null || subtitles.isEmpty()) {
+            return subtitles;
+        }
+
+        String sourceLanguage = resolveTranslationSourceLanguage();
+        String targetLanguage = resolveMlKitLanguage(translationTargetLanguage);
+        if (sourceLanguage == null) {
+            throw new IOException("Choose a subtitle translation source language. Auto source cannot be used with this model.");
+        }
+        if (targetLanguage == null) {
+            throw new IOException("Unsupported subtitle translation target language: " + translationTargetLanguage);
+        }
+        if (sourceLanguage.equals(targetLanguage)) {
+            return subtitles;
+        }
+
+        callback.onProgressUpdate(PROGRESS_TRANSLATING);
+
+        TranslatorOptions options = new TranslatorOptions.Builder()
+                .setSourceLanguage(sourceLanguage)
+                .setTargetLanguage(targetLanguage)
+                .build();
+        Translator translator = Translation.getClient(options);
+        try {
+            DownloadConditions conditions = new DownloadConditions.Builder().build();
+            Tasks.await(translator.downloadModelIfNeeded(conditions));
+            int index = 0;
+            while (index < subtitles.size()) {
+                List<SubtitleEntry> sentenceEntries = new ArrayList<>();
+                StringBuilder sentenceText = new StringBuilder();
+
+                while (index < subtitles.size()) {
+                    if (isCancelled) {
+                        break;
+                    }
+                    SubtitleEntry entry = subtitles.get(index++);
+                    String text = entry.getText();
+                    if (text == null || text.trim().isEmpty()) {
+                        continue;
+                    }
+                    if (sentenceText.length() > 0) {
+                        sentenceText.append(" ");
+                    }
+                    sentenceText.append(text.trim());
+                    sentenceEntries.add(entry);
+
+                    if (endsTranslationSentence(text) || sentenceText.length() >= 1200) {
+                        break;
+                    }
+                }
+
+                if (isCancelled || sentenceEntries.isEmpty()) {
+                    continue;
+                }
+
+                String translatedText = Tasks.await(translator.translate(sentenceText.toString()));
+                applyTranslatedSentence(sentenceEntries, translatedText);
+            }
+        } catch (Exception e) {
+            throw new IOException("Subtitle translation failed: "
+                    + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()), e);
+        } finally {
+            translator.close();
+        }
+
+        return subtitles;
+    }
+
+    private boolean endsTranslationSentence(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        for (int i = trimmed.length() - 1; i >= 0; i--) {
+            char c = trimmed.charAt(i);
+            if (c == '"' || c == '\'' || c == ')' || c == ']' || c == '}') {
+                continue;
+            }
+            return c == '.' || c == '!' || c == '?';
+        }
+        return false;
+    }
+
+    private void applyTranslatedSentence(List<SubtitleEntry> entries, String translatedText) {
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+        String translated = translatedText == null ? "" : translatedText.trim();
+        if (entries.size() == 1) {
+            SubtitleEntry entry = entries.get(0);
+            entry.setText(translated);
+            replaceWordTimingsWithTranslatedSpan(entry, translated);
+            return;
+        }
+
+        List<String> chunks = splitTranslatedSentence(translated, entries);
+        for (int i = 0; i < entries.size(); i++) {
+            String chunk = i < chunks.size() ? chunks.get(i) : "";
+            SubtitleEntry entry = entries.get(i);
+            entry.setText(chunk);
+            replaceWordTimingsWithTranslatedSpan(entry, chunk);
+        }
+    }
+
+    private List<String> splitTranslatedSentence(String translatedText, List<SubtitleEntry> entries) {
+        List<String> chunks = new ArrayList<>();
+        String translated = translatedText == null ? "" : translatedText.trim();
+        if (translated.isEmpty()) {
+            for (int i = 0; i < entries.size(); i++) {
+                chunks.add("");
+            }
+            return chunks;
+        }
+
+        String[] words = translated.split("\\s+");
+        int totalOriginalChars = 0;
+        for (SubtitleEntry entry : entries) {
+            totalOriginalChars += subtitleTextLength(entry);
+        }
+        if (totalOriginalChars <= 0) {
+            totalOriginalChars = entries.size();
+        }
+
+        int wordIndex = 0;
+        int cumulativeOriginalChars = 0;
+        for (int i = 0; i < entries.size(); i++) {
+            int remainingSlots = entries.size() - i - 1;
+            if (i == entries.size() - 1 || wordIndex >= words.length) {
+                chunks.add(joinWords(words, wordIndex, words.length));
+                wordIndex = words.length;
+                continue;
+            }
+
+            cumulativeOriginalChars += Math.max(1, subtitleTextLength(entries.get(i)));
+            int idealWordEnd = Math.round(words.length * (cumulativeOriginalChars / (float) totalOriginalChars));
+            int maxWordEnd = Math.max(wordIndex, words.length - remainingSlots);
+            int wordEnd = Math.max(wordIndex + 1, Math.min(idealWordEnd, maxWordEnd));
+            chunks.add(joinWords(words, wordIndex, wordEnd));
+            wordIndex = wordEnd;
+        }
+
+        return chunks;
+    }
+
+    private int subtitleTextLength(SubtitleEntry entry) {
+        String text = entry == null ? null : entry.getText();
+        return text == null ? 0 : text.trim().length();
+    }
+
+    private String joinWords(String[] words, int start, int end) {
+        if (words == null || start >= end || start >= words.length) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        int safeEnd = Math.min(end, words.length);
+        for (int i = Math.max(0, start); i < safeEnd; i++) {
+            if (builder.length() > 0) {
+                builder.append(" ");
+            }
+            builder.append(words[i]);
+        }
+        return builder.toString();
+    }
+
+    private String resolveTranslationSourceLanguage() {
+        if (translationSourceLanguage != null && !"auto".equals(translationSourceLanguage)) {
+            return resolveMlKitLanguage(translationSourceLanguage);
+        }
+
+        if (currentModelInfo != null && currentModelInfo.getLocale() != null) {
+            String locale = currentModelInfo.getLocale().trim().toLowerCase(Locale.US);
+            if (!locale.isEmpty() && !"multilingual".equals(locale)) {
+                String[] parts = locale.split("[-_]");
+                if (parts.length > 0) {
+                    return resolveMlKitLanguage(parts[0]);
+                }
+            }
+        }
+
+        if (currentModelInfo != null && currentModelInfo.isWhisper()
+                && whisperLanguage != null && !"auto".equals(whisperLanguage)) {
+            String whisperSource = resolveMlKitLanguage(whisperLanguage);
+            if (whisperSource != null) {
+                return whisperSource;
+            }
+        }
+
+        return null;
+    }
+
+    private String resolveMlKitLanguage(String language) {
+        if (language == null || language.trim().isEmpty() || "auto".equalsIgnoreCase(language)) {
+            return null;
+        }
+        return TranslateLanguage.fromLanguageTag(language.trim().toLowerCase(Locale.US));
+    }
+
+    private void replaceWordTimingsWithTranslatedSpan(SubtitleEntry entry, String translatedText) {
+        List<WordTiming> words = entry.getWords();
+        if (words == null || words.isEmpty() || translatedText == null || translatedText.trim().isEmpty()) {
+            return;
+        }
+        long startMs = words.get(0).getStartMs();
+        long endMs = words.get(words.size() - 1).getEndMs();
+        if (endMs <= startMs) {
+            return;
+        }
+        List<WordTiming> translatedWords = new ArrayList<>();
+        translatedWords.add(new WordTiming(translatedText, startMs, endMs, 0.0));
+        entry.setWords(translatedWords);
+    }
+
+    private List<SubtitleEntry> processAudioFileWithWhisper(File audioFile, SubtitleGenerationCallback callback) throws IOException {
+        List<SubtitleEntry> subtitles = new ArrayList<>();
+        WhisperContext activeWhisperContext = whisperContext;
+        if (activeWhisperContext == null) {
+            throw new IOException("Whisper context not initialized");
+        }
+
+        float[] audioData = readWavToFloatArray(audioFile);
+        if (audioData.length == 0) {
+            return subtitles;
+        }
+        callback.onProgressUpdate(0);
+
+        String language = whisperLanguage;
+        if ((language == null || language.isEmpty() || language.equals("auto"))
+                && currentModelInfo != null && currentModelInfo.getLocale() != null) {
+            String locale = currentModelInfo.getLocale().toLowerCase(Locale.US);
+            if (!locale.equals("multilingual") && !locale.isEmpty()) {
+                String[] parts = locale.split("-");
+                if (parts.length > 0) {
+                    language = parts[0];
+                }
+            }
+        }
+        if (language == null || language.isEmpty()) {
+            language = "auto";
+        }
+        if ("auto".equals(language)) {
+            callback.onProgressUpdate(PROGRESS_DETECTING_LANGUAGE);
+        }
+
+        long[] lastPartialUpdateMs = {0};
+        long[] lastProgressUpdateMs = {0};
+        int[] lastDispatchedProgress = {-1};
+        int nativeMaxSegmentLength = keepSentencesTogether ? 0 : maxSubtitleLength;
+        activeWhisperContext.transcribeData(audioData, language, true,
+                nativeMaxSegmentLength, suppressWhisperSdh, new WhisperCallback() {
+            @Override
+            public void onNewSegment(long startMs, long endMs, String text, String tokenTimingsJson) {
+                if (VERBOSE_SUBTITLE_LOGS) {
+                    Log.d(TAG, "onNewSegment callback: segmentStartUnits=" + startMs + ", segmentEndUnits=" + endMs
+                            + ", tokenTimings=" + (tokenTimingsJson == null ? 0 : tokenTimingsJson.length())
+                            + ", text=\"" + text + "\"");
+                }
+                if (isCancelled || text == null || text.trim().isEmpty()) {
+                    return;
+                }
+                if (suppressWhisperSdh && isWhisperSdhCaption(text)) {
+                    Log.d(TAG, "Skipping Whisper SDH caption: \"" + text.trim() + "\"");
+                    return;
+                }
+                long segmentStartMs = startMs * 10;
+                long segmentEndMs = endMs * 10;
+                List<WordTiming> timedWords = parseWhisperTokenTimings(
+                        tokenTimingsJson, segmentStartMs, segmentEndMs, text);
+                if (VERBOSE_SUBTITLE_LOGS && !timedWords.isEmpty()) {
+                    Log.d(TAG, "Whisper word timing range: startMs=" + timedWords.get(0).getStartMs()
+                            + ", endMs=" + timedWords.get(timedWords.size() - 1).getEndMs()
+                            + ", words=" + timedWords.size());
+                }
+
+                if (wordByWordMode) {
+                    for (WordTiming word : timedWords) {
+                        List<WordTiming> singleWordList = new ArrayList<>();
+                        singleWordList.add(word);
+                        synchronized (subtitles) {
+                            subtitles.add(new SubtitleEntry(subtitles.size() + 1,
+                                    formatTime(word.getStartMs()),
+                                    formatTime(word.getEndMs()),
+                                    word.getWord(),
+                                    singleWordList));
+                        }
+                    }
+                } else {
+                    synchronized (subtitles) {
+                        addTimedSubtitleChunks(subtitles, timedWords);
+                    }
+                }
+
+                synchronized (subtitles) {
+                    if (shouldDispatchPartialUpdate(lastPartialUpdateMs)) {
+                        callback.onPartialSubtitlesGenerated(new ArrayList<>(subtitles));
+                    }
+                }
+            }
+
+            @Override
+            public void onProgress(int progress) {
+                if (shouldDispatchProgressUpdate(lastProgressUpdateMs, lastDispatchedProgress, progress)) {
+                    callback.onProgressUpdate(progress);
+                }
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        return subtitles;
+    }
+
+    private List<WordTiming> parseWhisperTokenTimings(String tokenTimingsJson,
+                                                       long segmentStartMs,
+                                                       long segmentEndMs,
+                                                       String fallbackText) {
+        List<WordTiming> words = new ArrayList<>();
+        if (tokenTimingsJson == null || tokenTimingsJson.trim().isEmpty()) {
+            addFallbackWhisperWord(words, fallbackText, segmentStartMs, segmentEndMs);
+            return words;
+        }
+
+        try {
+            JSONArray tokens = new JSONArray(tokenTimingsJson);
+            StringBuilder currentWord = new StringBuilder();
+            long currentStartMs = -1;
+            long currentEndMs = -1;
+            double confidenceSum = 0.0;
+            int confidenceCount = 0;
+
+            for (int i = 0; i < tokens.length(); i++) {
+                JSONObject token = tokens.getJSONObject(i);
+                String tokenText = token.optString("text", "");
+                long startMs = token.optLong("startMs", -1);
+                long endMs = token.optLong("endMs", -1);
+                double confidence = token.optDouble("confidence", 0.0);
+                if (tokenText.isEmpty() || startMs < 0 || endMs <= startMs) {
+                    continue;
+                }
+
+                String trimmed = tokenText.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+
+                boolean punctuationOnly = isPunctuationOnly(trimmed);
+                boolean startsNewWord = currentWord.length() == 0 || Character.isWhitespace(tokenText.charAt(0));
+                if (startsNewWord && currentWord.length() > 0 && !punctuationOnly) {
+                    addCurrentWhisperWord(words, currentWord, currentStartMs, currentEndMs,
+                            confidenceSum, confidenceCount);
+                    currentWord = new StringBuilder();
+                    currentStartMs = -1;
+                    currentEndMs = -1;
+                    confidenceSum = 0.0;
+                    confidenceCount = 0;
+                }
+
+                if (currentWord.length() == 0) {
+                    currentStartMs = startMs;
+                }
+                currentWord.append(trimmed);
+                currentEndMs = Math.max(currentEndMs, endMs);
+                confidenceSum += confidence;
+                confidenceCount++;
+            }
+
+            addCurrentWhisperWord(words, currentWord, currentStartMs, currentEndMs,
+                    confidenceSum, confidenceCount);
+        } catch (Exception e) {
+            Log.e(TAG, "Error parsing Whisper token timings", e);
+            words.clear();
+        }
+
+        if (words.isEmpty()) {
+            addFallbackWhisperWord(words, fallbackText, segmentStartMs, segmentEndMs);
+        }
+
+        return words;
+    }
+
+    private void addCurrentWhisperWord(List<WordTiming> words, StringBuilder currentWord,
+                                       long startMs, long endMs,
+                                       double confidenceSum, int confidenceCount) {
+        String word = currentWord.toString().trim();
+        if (word.isEmpty() || startMs < 0 || endMs <= startMs) {
+            return;
+        }
+        double confidence = confidenceCount == 0 ? 0.0 : confidenceSum / confidenceCount;
+        words.add(new WordTiming(word, startMs, endMs, confidence));
+    }
+
+    private void addFallbackWhisperWord(List<WordTiming> words, String text, long startMs, long endMs) {
+        String fallback = text == null ? "" : text.trim();
+        if (!fallback.isEmpty() && endMs > startMs) {
+            words.add(new WordTiming(fallback, startMs, endMs, 0.0));
+        }
+    }
+
+    private boolean isPunctuationOnly(String text) {
+        for (int i = 0; i < text.length(); i++) {
+            if (Character.isLetterOrDigit(text.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void addTimedSubtitleChunks(List<SubtitleEntry> subtitles, List<WordTiming> words) {
+        List<WordTiming> currentWords = new ArrayList<>();
+        StringBuilder currentText = new StringBuilder();
+
+        for (WordTiming word : words) {
+            String wordText = word.getWord();
+            if (wordText == null || wordText.trim().isEmpty()) {
+                continue;
+            }
+
+            int nextLength = currentText.length() == 0
+                    ? wordText.length()
+                    : currentText.length() + 1 + wordText.length();
+            boolean sentenceBoundary = currentText.length() > 0 && endsSentence(currentText.toString());
+            boolean lengthBoundary = !keepSentencesTogether && nextLength > maxSubtitleLength;
+            if (!currentWords.isEmpty() && (lengthBoundary || sentenceBoundary)) {
+                addSubtitleChunk(subtitles, currentWords, currentText.toString());
+                currentWords = new ArrayList<>();
+                currentText = new StringBuilder();
+            }
+
+            if (currentText.length() > 0) {
+                currentText.append(" ");
+            }
+            currentText.append(wordText);
+            currentWords.add(word);
+        }
+
+        if (!currentWords.isEmpty()) {
+            addSubtitleChunk(subtitles, currentWords, currentText.toString());
+        }
+    }
+
+    private boolean endsSentence(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        return trimmed.endsWith(".") || trimmed.endsWith("!") || trimmed.endsWith("?");
+    }
+
+    private boolean isWhisperSdhCaption(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        return trimmed.length() >= 3
+                && ((trimmed.startsWith("[") && trimmed.endsWith("]"))
+                || (trimmed.startsWith("(") && trimmed.endsWith(")")));
+    }
+
+    private void addSubtitleChunk(List<SubtitleEntry> subtitles, List<WordTiming> words, String text) {
+        if (words.isEmpty()) {
+            return;
+        }
+        long startMs = words.get(0).getStartMs();
+        long endMs = words.get(words.size() - 1).getEndMs();
+        if (endMs <= startMs) {
+            return;
+        }
+        subtitles.add(new SubtitleEntry(subtitles.size() + 1,
+                formatTime(startMs),
+                formatTime(endMs),
+                text.trim(),
+                new ArrayList<>(words)));
+    }
+
+    private float[] readWavToFloatArray(File file) throws IOException {
+        byte[] bytes = new byte[(int) file.length()];
+        try (FileInputStream fis = new FileInputStream(file)) {
+            int totalRead = 0;
+            while (totalRead < bytes.length) {
+                int read = fis.read(bytes, totalRead, bytes.length - totalRead);
+                if (read == -1) break;
+                totalRead += read;
+            }
+            if (totalRead < 44) {
+                throw new IOException("Audio file too short");
+            }
+        }
+
+        int pcmLength = (bytes.length - 44) / 2;
+        float[] floats = new float[pcmLength];
+        for (int i = 0; i < pcmLength; i++) {
+            int sampleIndex = 44 + i * 2;
+            short sample = (short) ((bytes[sampleIndex] & 0xFF) | (bytes[sampleIndex + 1] << 8));
+            floats[i] = sample / 32768.0f;
+        }
+        return floats;
     }
 }

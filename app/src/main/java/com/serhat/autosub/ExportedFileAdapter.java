@@ -20,6 +20,7 @@ import com.google.android.material.button.MaterialButton;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapter.ExportViewHolder> {
@@ -27,11 +28,16 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
     public static final int VIEW_TYPE_GRID = 1;
 
     private final List<ExportedFileItem> items = new ArrayList<>();
+    private final List<ExportRowState> rowStates = new ArrayList<>();
     private final Set<String> selectedPaths = new HashSet<>();
     private Listener listener;
     private boolean selectionMode = false;
     private int layoutMode = VIEW_TYPE_LIST;
     private ThumbnailResolver thumbnailResolver;
+
+    public ExportedFileAdapter() {
+        setHasStableIds(true);
+    }
 
     public interface Listener {
         void onOpen(ExportedFileItem item);
@@ -54,6 +60,9 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
     }
 
     public void setLayoutMode(int layoutMode) {
+        if (this.layoutMode == layoutMode) {
+            return;
+        }
         this.layoutMode = layoutMode;
         notifyDataSetChanged();
     }
@@ -63,10 +72,51 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
     }
 
     public void submit(List<ExportedFileItem> nextItems) {
+        if (nextItems == null) {
+            nextItems = new ArrayList<>();
+        }
+        List<ExportedFileItem> submittedItems = nextItems;
+        selectedPaths.removeIf(path -> findByPath(submittedItems, path) == null);
+
+        List<ExportRowState> newStates = new ArrayList<>(submittedItems.size());
+        for (ExportedFileItem item : submittedItems) {
+            newStates.add(new ExportRowState(item));
+        }
+
+        boolean sameStructure = items.size() == submittedItems.size() && rowStates.size() == submittedItems.size();
+        if (sameStructure) {
+            for (int i = 0; i < submittedItems.size(); i++) {
+                if (!Objects.equals(pathOf(items.get(i)), pathOf(submittedItems.get(i)))) {
+                    sameStructure = false;
+                    break;
+                }
+            }
+        }
+
+        if (!sameStructure) {
+            items.clear();
+            items.addAll(submittedItems);
+            rowStates.clear();
+            rowStates.addAll(newStates);
+            notifyDataSetChanged();
+            return;
+        }
+
+        List<Integer> changedPositions = new ArrayList<>();
+        for (int i = 0; i < newStates.size(); i++) {
+            if (!newStates.get(i).equals(rowStates.get(i))) {
+                changedPositions.add(i);
+            }
+        }
+
         items.clear();
-        items.addAll(nextItems);
-        selectedPaths.removeIf(path -> findByPath(path) == null);
-        notifyDataSetChanged();
+        items.addAll(submittedItems);
+        rowStates.clear();
+        rowStates.addAll(newStates);
+
+        for (int position : changedPositions) {
+            notifyItemChanged(position);
+        }
     }
 
     public void setSelectionMode(boolean selectionMode) {
@@ -74,7 +124,8 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
         if (!selectionMode) {
             selectedPaths.clear();
         }
-        notifyDataSetChanged();
+        rebuildRowStates();
+        notifyItemRangeChanged(0, items.size());
     }
 
     public boolean isSelectionMode() {
@@ -91,7 +142,11 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
         } else {
             selectedPaths.add(path);
         }
-        notifyDataSetChanged();
+        int position = items.indexOf(item);
+        if (position >= 0) {
+            updateRowState(position);
+            notifyItemChanged(position);
+        }
         if (listener != null) listener.onSelectionChanged();
     }
 
@@ -100,7 +155,11 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
             return;
         }
         selectedPaths.add(item.getFile().getAbsolutePath());
-        notifyDataSetChanged();
+        int position = items.indexOf(item);
+        if (position >= 0) {
+            updateRowState(position);
+            notifyItemChanged(position);
+        }
         if (listener != null) listener.onSelectionChanged();
     }
 
@@ -108,7 +167,8 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
         for (ExportedFileItem item : items) {
             selectedPaths.add(item.getFile().getAbsolutePath());
         }
-        notifyDataSetChanged();
+        rebuildRowStates();
+        notifyItemRangeChanged(0, items.size());
         if (listener != null) listener.onSelectionChanged();
     }
 
@@ -128,12 +188,37 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
     }
 
     private ExportedFileItem findByPath(String path) {
-        for (ExportedFileItem item : items) {
+        return findByPath(items, path);
+    }
+
+    private ExportedFileItem findByPath(List<ExportedFileItem> source, String path) {
+        if (source == null) {
+            return null;
+        }
+        for (ExportedFileItem item : source) {
             if (item.getFile().getAbsolutePath().equals(path)) {
                 return item;
             }
         }
         return null;
+    }
+
+    private String pathOf(ExportedFileItem item) {
+        return item == null ? "" : item.getFile().getAbsolutePath();
+    }
+
+    private void updateRowState(int position) {
+        if (position < 0 || position >= items.size() || position >= rowStates.size()) {
+            return;
+        }
+        rowStates.set(position, new ExportRowState(items.get(position)));
+    }
+
+    private void rebuildRowStates() {
+        rowStates.clear();
+        for (ExportedFileItem item : items) {
+            rowStates.add(new ExportRowState(item));
+        }
     }
 
     @Override
@@ -159,11 +244,31 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
         return items.size();
     }
 
+    @Override
+    public long getItemId(int position) {
+        if (position < 0 || position >= items.size()) {
+            return RecyclerView.NO_ID;
+        }
+        return stableId(pathOf(items.get(position)));
+    }
+
+    private long stableId(String value) {
+        long result = 1125899906842597L;
+        if (value == null) return result;
+        for (int i = 0; i < value.length(); i++) {
+            result = 31 * result + value.charAt(i);
+        }
+        return result;
+    }
+
     class ExportViewHolder extends RecyclerView.ViewHolder {
         ImageView iconIV;
         TextView titleTV, detailTV;
         CheckBox selectCB;
         MaterialButton playBT, shareBT;
+        private String boundThumbPath;
+        private ExportedFileItem.Type boundIconType;
+        private int boundLayoutMode = -1;
 
         ExportViewHolder(@NonNull View itemView) {
             super(itemView);
@@ -182,34 +287,7 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
             boolean folder = item.getType() == ExportedFileItem.Type.FOLDER;
             boolean video = item.getType() == ExportedFileItem.Type.VIDEO;
 
-            String thumbPath = "";
-            if (video && thumbnailResolver != null) {
-                thumbPath = thumbnailResolver.getThumbnailPath(item);
-            }
-
-            if (video && thumbPath != null && !thumbPath.isEmpty() && new java.io.File(thumbPath).exists()) {
-                iconIV.setImageURI(android.net.Uri.fromFile(new java.io.File(thumbPath)));
-                iconIV.setImageTintList(null);
-                iconIV.setPadding(0, 0, 0, 0);
-                if (iconIV.getScaleType() != ImageView.ScaleType.CENTER_CROP) {
-                    iconIV.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                }
-            } else {
-                iconIV.setImageResource(iconFor(item.getType()));
-                android.util.TypedValue typedValue = new android.util.TypedValue();
-                itemView.getContext().getTheme().resolveAttribute(com.google.android.material.R.attr.colorPrimary, typedValue, true);
-                iconIV.setImageTintList(android.content.res.ColorStateList.valueOf(typedValue.data));
-
-                if (layoutMode == VIEW_TYPE_GRID) {
-                    int p = Math.round(20 * itemView.getResources().getDisplayMetrics().density);
-                    iconIV.setPadding(p, p, p, p);
-                    iconIV.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                } else {
-                    int p = Math.round(8 * itemView.getResources().getDisplayMetrics().density);
-                    iconIV.setPadding(p, p, p, p);
-                    iconIV.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                }
-            }
+            bindIcon(item, video);
 
             boolean selected = selectedPaths.contains(item.getFile().getAbsolutePath());
             selectCB.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
@@ -287,6 +365,86 @@ public class ExportedFileAdapter extends RecyclerView.Adapter<ExportedFileAdapte
 
         private int dp(int value) {
             return Math.round(value * itemView.getResources().getDisplayMetrics().density);
+        }
+
+        private void bindIcon(ExportedFileItem item, boolean video) {
+            String thumbPath = "";
+            if (video && thumbnailResolver != null) {
+                thumbPath = thumbnailResolver.getThumbnailPath(item);
+            }
+            if (Objects.equals(boundThumbPath, thumbPath)
+                    && boundIconType == item.getType()
+                    && boundLayoutMode == layoutMode) {
+                return;
+            }
+            boundThumbPath = thumbPath;
+            boundIconType = item.getType();
+            boundLayoutMode = layoutMode;
+
+            if (video && thumbPath != null && !thumbPath.isEmpty() && new java.io.File(thumbPath).exists()) {
+                iconIV.setImageURI(android.net.Uri.fromFile(new java.io.File(thumbPath)));
+                iconIV.setImageTintList(null);
+                iconIV.setPadding(0, 0, 0, 0);
+                if (iconIV.getScaleType() != ImageView.ScaleType.CENTER_CROP) {
+                    iconIV.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                }
+            } else {
+                iconIV.setImageResource(iconFor(item.getType()));
+                android.util.TypedValue typedValue = new android.util.TypedValue();
+                itemView.getContext().getTheme().resolveAttribute(com.google.android.material.R.attr.colorPrimary, typedValue, true);
+                iconIV.setImageTintList(android.content.res.ColorStateList.valueOf(typedValue.data));
+
+                if (layoutMode == VIEW_TYPE_GRID) {
+                    int p = Math.round(20 * itemView.getResources().getDisplayMetrics().density);
+                    iconIV.setPadding(p, p, p, p);
+                    iconIV.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                } else {
+                    int p = Math.round(8 * itemView.getResources().getDisplayMetrics().density);
+                    iconIV.setPadding(p, p, p, p);
+                    iconIV.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                }
+            }
+        }
+    }
+
+    private class ExportRowState {
+        private final String path;
+        private final String name;
+        private final String detail;
+        private final ExportedFileItem.Type type;
+        private final boolean selected;
+        private final boolean selectionModeSnapshot;
+        private final String thumbnailPath;
+
+        private ExportRowState(ExportedFileItem item) {
+            path = pathOf(item);
+            name = item.getName();
+            detail = item.getDetail();
+            type = item.getType();
+            selected = selectedPaths.contains(path);
+            selectionModeSnapshot = selectionMode;
+            thumbnailPath = item.getType() == ExportedFileItem.Type.VIDEO && thumbnailResolver != null
+                    ? thumbnailResolver.getThumbnailPath(item)
+                    : "";
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (!(obj instanceof ExportRowState)) return false;
+            ExportRowState other = (ExportRowState) obj;
+            return selected == other.selected
+                    && selectionModeSnapshot == other.selectionModeSnapshot
+                    && type == other.type
+                    && Objects.equals(path, other.path)
+                    && Objects.equals(name, other.name)
+                    && Objects.equals(detail, other.detail)
+                    && Objects.equals(thumbnailPath, other.thumbnailPath);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(path, name, detail, type, selected, selectionModeSnapshot, thumbnailPath);
         }
     }
 }

@@ -45,10 +45,12 @@ dependencies {
     implementation 'net.java.dev.jna:jna:5.18.1@aar'
     implementation 'com.alphacephei:vosk-android:0.3.75@aar'
     implementation project(':models')
+    implementation project(':whisper')
     implementation(files("libs/ffmpeg-kit.aar"))
     implementation 'com.arthenica:smart-exception-java:0.2.1'
     implementation "androidx.media3:media3-exoplayer:1.10.1"
     implementation "androidx.media3:media3-ui:1.10.1"
+    implementation 'com.google.mlkit:translate:17.0.3'
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core

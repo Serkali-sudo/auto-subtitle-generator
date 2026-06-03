@@ -9,16 +9,20 @@ import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.chip.Chip;
 import com.google.android.material.chip.ChipGroup;
+import com.google.android.material.color.MaterialColors;
 import com.google.android.material.progressindicator.LinearProgressIndicator;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHolder> {
     private final VoskModelManager modelManager;
     private final List<VoskModelInfo> models = new ArrayList<>();
+    private final List<ModelRowState> rowStates = new ArrayList<>();
     private ModelActionListener listener;
     private String selectedModelId = "";
     private String activeDownloadModelId = "";
@@ -40,6 +44,7 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
 
     public ModelAdapter(VoskModelManager modelManager) {
         this.modelManager = modelManager;
+        setHasStableIds(true);
     }
 
     public void setListener(ModelActionListener listener) {
@@ -50,8 +55,9 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
                        String activeDownloadModelId, int activeDownloadProgress,
                        String activeDownloadSpeed, String activeDownloadEta,
                        boolean activeDownloadPaused, List<String> queuedModelIds) {
-        models.clear();
-        models.addAll(newModels);
+        if (newModels == null) {
+            newModels = new ArrayList<>();
+        }
         this.selectedModelId = selectedModelId == null ? "" : selectedModelId;
         this.activeDownloadModelId = activeDownloadModelId == null ? "" : activeDownloadModelId;
         this.activeDownloadProgress = activeDownloadProgress;
@@ -59,7 +65,46 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
         this.activeDownloadEta = activeDownloadEta == null ? "" : activeDownloadEta;
         this.activeDownloadPaused = activeDownloadPaused;
         this.queuedModelIds = queuedModelIds == null ? new ArrayList<>() : queuedModelIds;
-        notifyDataSetChanged();
+
+        List<ModelRowState> newStates = new ArrayList<>(newModels.size());
+        for (VoskModelInfo modelInfo : newModels) {
+            newStates.add(new ModelRowState(modelInfo));
+        }
+
+        boolean sameStructure = models.size() == newModels.size() && rowStates.size() == newModels.size();
+        if (sameStructure) {
+            for (int i = 0; i < newModels.size(); i++) {
+                if (!Objects.equals(models.get(i).getId(), newModels.get(i).getId())) {
+                    sameStructure = false;
+                    break;
+                }
+            }
+        }
+
+        if (!sameStructure) {
+            models.clear();
+            models.addAll(newModels);
+            rowStates.clear();
+            rowStates.addAll(newStates);
+            notifyDataSetChanged();
+            return;
+        }
+
+        List<Integer> changedPositions = new ArrayList<>();
+        for (int i = 0; i < newStates.size(); i++) {
+            if (!newStates.get(i).equals(rowStates.get(i))) {
+                changedPositions.add(i);
+            }
+        }
+
+        models.clear();
+        models.addAll(newModels);
+        rowStates.clear();
+        rowStates.addAll(newStates);
+
+        for (int position : changedPositions) {
+            notifyItemChanged(position);
+        }
     }
 
     @NonNull
@@ -77,6 +122,23 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
     @Override
     public int getItemCount() {
         return models.size();
+    }
+
+    @Override
+    public long getItemId(int position) {
+        if (position < 0 || position >= models.size()) {
+            return RecyclerView.NO_ID;
+        }
+        return stableId(models.get(position).getId());
+    }
+
+    private long stableId(String value) {
+        long result = 1125899906842597L;
+        if (value == null) return result;
+        for (int i = 0; i < value.length(); i++) {
+            result = 31 * result + value.charAt(i);
+        }
+        return result;
     }
 
     class ModelViewHolder extends RecyclerView.ViewHolder {
@@ -106,6 +168,7 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
 
             titleTV.setText(modelInfo.getLanguage());
             sizeBadgeTV.setText(modelInfo.getSize());
+            applyCardOutline(modelInfo, selected);
 
             if (downloading) {
                 String speedEta = "";
@@ -113,19 +176,21 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
                     speedEta += activeDownloadSpeed;
                 }
                 if (!activeDownloadEta.isEmpty()) {
-                    if (!speedEta.isEmpty()) speedEta += " • ";
+                    if (!speedEta.isEmpty()) speedEta += " / ";
                     speedEta += activeDownloadEta;
                 }
                 if (!speedEta.isEmpty()) {
-                    detailTV.setText(modelInfo.getId() + " - Downloading " + activeDownloadProgress + "% (" + speedEta + ")");
+                    detailTV.setText(detailText(modelInfo,
+                            modelInfo.getId() + " - Downloading " + activeDownloadProgress + "% (" + speedEta + ")"));
                 } else {
-                    detailTV.setText(modelInfo.getId() + " - Downloading " + activeDownloadProgress + "%");
+                    detailTV.setText(detailText(modelInfo,
+                            modelInfo.getId() + " - Downloading " + activeDownloadProgress + "%"));
                 }
             } else if (hasPartial) {
                 int partialProgress = modelManager.getDownloadProgress(modelInfo.getId());
-                detailTV.setText(modelInfo.getId() + " (Paused • " + partialProgress + "%)");
+                detailTV.setText(detailText(modelInfo, modelInfo.getId() + " (Paused / " + partialProgress + "%)"));
             } else {
-                detailTV.setText(modelInfo.getId() + " - " + modelInfo.getLicense());
+                detailTV.setText(detailText(modelInfo, modelInfo.getId() + " - " + modelInfo.getLicense()));
             }
 
             renderChips(modelInfo, installed, selected, downloading, hasPartial, queued);
@@ -159,6 +224,7 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
             }
 
             if (selected
+                    && !modelInfo.isWhisper()
                     && loadMode != VoskModelManager.ModelLoadMode.FULL_QUALITY
                     && (modelInfo.isVeryLarge() || !modelInfo.isMobileRecommended())) {
                 primaryBT.setText("Mode");
@@ -231,13 +297,44 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
             }
         }
 
+        private void applyCardOutline(VoskModelInfo modelInfo, boolean selected) {
+            if (!(itemView instanceof MaterialCardView)) {
+                return;
+            }
+            MaterialCardView card = (MaterialCardView) itemView;
+            int color = MaterialColors.getColor(
+                    itemView.getContext(),
+                    modelInfo.isWhisper()
+                            ? com.google.android.material.R.attr.colorTertiary
+                            : com.google.android.material.R.attr.colorPrimary,
+                    0
+            );
+            card.setStrokeColor(color);
+            card.setStrokeWidth(dp(selected ? 2 : 1));
+        }
+
+        private int dp(int value) {
+            return Math.round(value * itemView.getResources().getDisplayMetrics().density);
+        }
+
+        private String detailText(VoskModelInfo modelInfo, String baseText) {
+            String details = modelInfo.getDetails();
+            if (details == null || details.trim().isEmpty()) {
+                return baseText;
+            }
+            return baseText + "\n" + details.trim();
+        }
+
         private void renderChips(VoskModelInfo modelInfo, boolean installed, boolean selected, boolean downloading, boolean hasPartial, boolean queued) {
             chipGroup.removeAllViews();
             addChip(selected ? "Selected" : installed ? "Installed" : "Cloud");
+            if (modelInfo.isWhisper()) addChip("Whisper");
             if (modelInfo.isMobileRecommended()) addChip("Mobile");
             if (modelInfo.isVeryLarge()) addChip("Heavy");
-            VoskModelManager.ModelLoadMode loadMode = modelManager.getModelLoadMode(modelInfo);
-            if (loadMode != VoskModelManager.ModelLoadMode.FULL_QUALITY) addChip(loadMode.getLabel());
+            if (!modelInfo.isWhisper()) {
+                VoskModelManager.ModelLoadMode loadMode = modelManager.getModelLoadMode(modelInfo);
+                if (loadMode != VoskModelManager.ModelLoadMode.FULL_QUALITY) addChip(loadMode.getLabel());
+            }
             if (downloading) addChip("Downloading");
             else if (queued) addChip("Queued");
             else if (hasPartial) addChip("Paused");
@@ -249,6 +346,86 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
             chip.setClickable(false);
             chip.setCheckable(false);
             chipGroup.addView(chip);
+        }
+    }
+
+    private class ModelRowState {
+        private final String id;
+        private final String language;
+        private final String size;
+        private final String license;
+        private final String details;
+        private final boolean whisper;
+        private final boolean mobileRecommended;
+        private final boolean veryLarge;
+        private final boolean bundled;
+        private final boolean installed;
+        private final boolean selected;
+        private final boolean downloading;
+        private final boolean queued;
+        private final boolean hasPartial;
+        private final VoskModelManager.ModelLoadMode loadMode;
+        private final int downloadProgress;
+        private final int partialProgress;
+        private final String downloadSpeed;
+        private final String downloadEta;
+        private final boolean downloadPaused;
+
+        private ModelRowState(VoskModelInfo modelInfo) {
+            id = modelInfo.getId();
+            language = modelInfo.getLanguage();
+            size = modelInfo.getSize();
+            license = modelInfo.getLicense();
+            details = modelInfo.getDetails();
+            whisper = modelInfo.isWhisper();
+            mobileRecommended = modelInfo.isMobileRecommended();
+            veryLarge = modelInfo.isVeryLarge();
+            bundled = modelInfo.isBundled();
+            installed = modelManager.isInstalled(id);
+            selected = selectedModelId.equals(id);
+            downloading = activeDownloadModelId.equals(id);
+            queued = queuedModelIds.contains(id);
+            hasPartial = !installed && !selected && !downloading && !queued && modelManager.hasPartialDownload(id);
+            loadMode = modelManager.getModelLoadMode(modelInfo);
+            downloadProgress = downloading ? activeDownloadProgress : 0;
+            partialProgress = hasPartial ? modelManager.getDownloadProgress(id) : 0;
+            downloadSpeed = downloading ? activeDownloadSpeed : "";
+            downloadEta = downloading ? activeDownloadEta : "";
+            downloadPaused = downloading && activeDownloadPaused;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (!(obj instanceof ModelRowState)) return false;
+            ModelRowState other = (ModelRowState) obj;
+            return whisper == other.whisper
+                    && mobileRecommended == other.mobileRecommended
+                    && veryLarge == other.veryLarge
+                    && bundled == other.bundled
+                    && installed == other.installed
+                    && selected == other.selected
+                    && downloading == other.downloading
+                    && queued == other.queued
+                    && hasPartial == other.hasPartial
+                    && downloadProgress == other.downloadProgress
+                    && partialProgress == other.partialProgress
+                    && downloadPaused == other.downloadPaused
+                    && loadMode == other.loadMode
+                    && Objects.equals(id, other.id)
+                    && Objects.equals(language, other.language)
+                    && Objects.equals(size, other.size)
+                    && Objects.equals(license, other.license)
+                    && Objects.equals(details, other.details)
+                    && Objects.equals(downloadSpeed, other.downloadSpeed)
+                    && Objects.equals(downloadEta, other.downloadEta);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(id, language, size, license, details, whisper, mobileRecommended, veryLarge,
+                    bundled, installed, selected, downloading, queued, hasPartial, loadMode,
+                    downloadProgress, partialProgress, downloadSpeed, downloadEta, downloadPaused);
         }
     }
 }

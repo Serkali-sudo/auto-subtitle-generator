@@ -138,6 +138,7 @@ public class ExportsFragment extends Fragment implements ActionMode.Callback {
         adapter.setLayoutMode(savedMode);
 
         binding.exportsRecyclerView.setAdapter(adapter);
+        binding.exportsRecyclerView.setItemAnimator(null);
         updateLayoutManager();
     }
 

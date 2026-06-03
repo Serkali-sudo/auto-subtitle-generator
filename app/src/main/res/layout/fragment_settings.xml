@@ -54,6 +54,105 @@
                     android:layout_weight="1"
                     android:text="VTT" />
             </com.google.android.material.button.MaterialButtonToggleGroup>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:alpha="0.75"
+                    android:text="Sentence split length"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/subtitleLengthValueTV"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="42 chars"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <com.google.android.material.slider.Slider
+                android:id="@+id/subtitleLengthSlider"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:value="42"
+                android:valueFrom="24"
+                android:valueTo="96"
+                android:stepSize="1" />
+
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/keepSentencesTogetherSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:checked="true"
+                android:text="Keep sentences together" />
+
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/suppressWhisperSdhSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:checked="true"
+                android:text="Remove Whisper SDH captions" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:alpha="0.75"
+                android:text="Whisper language"
+                android:textSize="13sp" />
+
+            <Spinner
+                android:id="@+id/whisperLanguageSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="4dp" />
+
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/translateSubtitlesSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="Translate subtitles" />
+
+            <TextView
+                android:id="@+id/translationSourceLabelTV"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:alpha="0.75"
+                android:text="Translation source"
+                android:textSize="13sp" />
+
+            <Spinner
+                android:id="@+id/translationSourceLanguageSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="4dp" />
+
+            <TextView
+                android:id="@+id/translationTargetLabelTV"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:alpha="0.75"
+                android:text="Translation target"
+                android:textSize="13sp" />
+
+            <Spinner
+                android:id="@+id/translationTargetLanguageSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="4dp" />
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 

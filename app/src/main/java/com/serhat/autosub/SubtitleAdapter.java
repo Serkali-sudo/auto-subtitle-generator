@@ -12,11 +12,13 @@ import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.SubtitleViewHolder> {
 
     private List<SubtitleGenerator.SubtitleEntry> subtitles = new ArrayList<>();
+    private final List<SubtitleRowState> rowStates = new ArrayList<>();
     private int highlightedPosition = -1;
     private OnSubtitleClickListener onSubtitleClickListener;
     private OnPlayClickListener onPlayClickListener;
@@ -58,18 +60,69 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
     }
 
     public void setSubtitles(List<SubtitleGenerator.SubtitleEntry> subtitles) {
+        if (subtitles == null) {
+            subtitles = new ArrayList<>();
+        }
+        int oldHighlightedPosition = highlightedPosition;
+        int oldSize = rowStates.size();
         highlightedPosition = -1;
+        int submittedSize = subtitles.size();
+        selectedPositions.removeIf(position -> position < 0 || position >= submittedSize);
+
+        List<SubtitleRowState> newStates = buildRowStates(subtitles);
+        boolean samePrefix = rowStates.size() <= newStates.size();
+        if (samePrefix) {
+            for (int i = 0; i < rowStates.size(); i++) {
+                if (!sameIdentity(rowStates.get(i), newStates.get(i))) {
+                    samePrefix = false;
+                    break;
+                }
+            }
+        }
+
+        boolean sameStructure = rowStates.size() == newStates.size() && samePrefix;
+        List<Integer> changedPositions = new ArrayList<>();
+        if (samePrefix) {
+            int compareCount = Math.min(rowStates.size(), newStates.size());
+            for (int i = 0; i < compareCount; i++) {
+                if (!newStates.get(i).equals(rowStates.get(i))) {
+                    changedPositions.add(i);
+                }
+            }
+            if (oldHighlightedPosition >= 0 && oldHighlightedPosition < compareCount
+                    && !changedPositions.contains(oldHighlightedPosition)) {
+                changedPositions.add(oldHighlightedPosition);
+            }
+        }
+
         this.subtitles = subtitles;
-        notifyDataSetChanged();
+        rowStates.clear();
+        rowStates.addAll(newStates);
+
+        if (!samePrefix) {
+            notifyDataSetChanged();
+            return;
+        }
+
+        for (int position : changedPositions) {
+            notifyItemChanged(position);
+        }
+        if (newStates.size() > oldSize) {
+            notifyItemRangeInserted(oldSize, newStates.size() - oldSize);
+        } else if (!sameStructure) {
+            notifyDataSetChanged();
+        }
     }
 
     public void setHighlightedPosition(int position) {
         int oldHighlightedPosition = highlightedPosition;
         highlightedPosition = position;
         if (oldHighlightedPosition != -1) {
+            updateRowState(oldHighlightedPosition);
             notifyItemChanged(oldHighlightedPosition);
         }
         if (highlightedPosition != -1) {
+            updateRowState(highlightedPosition);
             notifyItemChanged(highlightedPosition);
         }
     }
@@ -79,7 +132,8 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
         if (!isSelectionMode) {
             selectedPositions.clear();
         }
-        notifyDataSetChanged();
+        rebuildRowStates();
+        notifyItemRangeChanged(0, subtitles.size());
     }
 
     public boolean isSelectionMode() {
@@ -91,11 +145,15 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
     }
 
     public void toggleSelection(int position) {
+        if (position < 0 || position >= subtitles.size()) {
+            return;
+        }
         if (selectedPositions.contains(position)) {
             selectedPositions.remove(position);
         } else {
             selectedPositions.add(position);
         }
+        updateRowState(position);
         notifyItemChanged(position, "selection");
     }
 
@@ -224,6 +282,7 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
     public void updateSubtitle(int position, String newText) {
         if (position >= 0 && position < subtitles.size()) {
             subtitles.get(position).setText(newText);
+            updateRowState(position);
             notifyItemChanged(position);
         }
     }
@@ -233,6 +292,70 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
             subtitles.remove(position);
             notifyItemRemoved(position);
             notifyItemRangeChanged(position, subtitles.size() - position);
+            rebuildRowStates();
+        }
+    }
+
+    private List<SubtitleRowState> buildRowStates(List<SubtitleGenerator.SubtitleEntry> entries) {
+        List<SubtitleRowState> states = new ArrayList<>(entries.size());
+        for (int i = 0; i < entries.size(); i++) {
+            states.add(new SubtitleRowState(entries.get(i), i == highlightedPosition, selectedPositions.contains(i)));
+        }
+        return states;
+    }
+
+    private void updateRowState(int position) {
+        if (position < 0 || position >= subtitles.size() || position >= rowStates.size()) {
+            return;
+        }
+        rowStates.set(position, new SubtitleRowState(subtitles.get(position),
+                position == highlightedPosition, selectedPositions.contains(position)));
+    }
+
+    private void rebuildRowStates() {
+        rowStates.clear();
+        rowStates.addAll(buildRowStates(subtitles));
+    }
+
+    private boolean sameIdentity(SubtitleRowState first, SubtitleRowState second) {
+        return first.number == second.number
+                && Objects.equals(first.startTime, second.startTime)
+                && Objects.equals(first.endTime, second.endTime);
+    }
+
+    private static class SubtitleRowState {
+        private final int number;
+        private final String startTime;
+        private final String endTime;
+        private final String text;
+        private final boolean highlighted;
+        private final boolean selected;
+
+        private SubtitleRowState(SubtitleGenerator.SubtitleEntry entry, boolean highlighted, boolean selected) {
+            number = entry.getNumber();
+            startTime = entry.getStartTime();
+            endTime = entry.getEndTime();
+            text = entry.getText();
+            this.highlighted = highlighted;
+            this.selected = selected;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (!(obj instanceof SubtitleRowState)) return false;
+            SubtitleRowState other = (SubtitleRowState) obj;
+            return number == other.number
+                    && highlighted == other.highlighted
+                    && selected == other.selected
+                    && Objects.equals(startTime, other.startTime)
+                    && Objects.equals(endTime, other.endTime)
+                    && Objects.equals(text, other.text);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(number, startTime, endTime, text, highlighted, selected);
         }
     }
 }

@@ -9,20 +9,25 @@ public class VoskModelInfo {
     private final String locale;
     private final String size;
     private final String license;
+    private final String details;
     private final String downloadUrl;
     private final boolean mobileRecommended;
     private final String bundledAssetName;
+    private final boolean isWhisper;
 
     public VoskModelInfo(String id, String language, String locale, String size, String license,
-                         String downloadUrl, boolean mobileRecommended, String bundledAssetName) {
+                         String details, String downloadUrl, boolean mobileRecommended,
+                         String bundledAssetName, boolean isWhisper) {
         this.id = id;
         this.language = language;
         this.locale = locale;
         this.size = size;
         this.license = license;
+        this.details = details;
         this.downloadUrl = downloadUrl;
         this.mobileRecommended = mobileRecommended;
         this.bundledAssetName = bundledAssetName;
+        this.isWhisper = isWhisper;
     }
 
     public static VoskModelInfo fromJson(JSONObject object) throws JSONException {
@@ -32,9 +37,11 @@ public class VoskModelInfo {
                 object.optString("locale", ""),
                 object.optString("size", ""),
                 object.optString("license", ""),
+                object.optString("details", ""),
                 object.optString("downloadUrl", ""),
                 object.optBoolean("mobileRecommended", false),
-                object.optString("bundledAssetName", "")
+                object.optString("bundledAssetName", ""),
+                object.optBoolean("isWhisper", false)
         );
     }
 
@@ -56,6 +63,10 @@ public class VoskModelInfo {
 
     public String getLicense() {
         return license;
+    }
+
+    public String getDetails() {
+        return details;
     }
 
     public String getDownloadUrl() {
@@ -108,6 +119,10 @@ public class VoskModelInfo {
 
     public boolean isBundled() {
         return bundledAssetName != null && !bundledAssetName.isEmpty();
+    }
+
+    public boolean isWhisper() {
+        return isWhisper;
     }
 
     public String getDisplayTitle() {

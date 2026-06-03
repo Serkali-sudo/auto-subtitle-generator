@@ -32,8 +32,8 @@ public class VoskModelManager {
 
     public enum ModelLoadMode {
         FULL_QUALITY("Full quality"),
-        COMPATIBILITY("Compatibility"),
-        LEGACY_COMPATIBILITY("Super compatibility");
+        COMPATIBILITY("Memory saver"),
+        LEGACY_COMPATIBILITY("Last resort");
 
         private final String label;
 
@@ -73,9 +73,23 @@ public class VoskModelManager {
             throw new IOException("Could not load Vosk model catalog", e);
         }
 
-        Collections.sort(catalog, Comparator.comparing(VoskModelInfo::getLanguage)
+        Collections.sort(catalog, Comparator.comparingInt(this::catalogPriority)
+                .thenComparing(VoskModelInfo::getLanguage)
                 .thenComparing(VoskModelInfo::getId));
         return new ArrayList<>(catalog);
+    }
+
+    private int catalogPriority(VoskModelInfo modelInfo) {
+        if (modelInfo == null) {
+            return 100;
+        }
+        if ("whisper-base-en".equals(modelInfo.getId())) {
+            return 0;
+        }
+        if ("whisper-base".equals(modelInfo.getId())) {
+            return 1;
+        }
+        return 100;
     }
 
     public List<VoskModelInfo> getCatalog() {
@@ -113,6 +127,8 @@ public class VoskModelManager {
         preferences.edit().putString(KEY_SELECTED_MODEL_ID, modelId).apply();
     }
 
+
+
     public boolean isInstalled(String modelId) {
         VoskModelInfo modelInfo = findById(modelId);
         if (modelInfo == null) {
@@ -129,7 +145,7 @@ public class VoskModelManager {
     }
 
     public void prepareForMobileLoad(VoskModelInfo modelInfo) {
-        if (modelInfo == null || modelInfo.isBundled()) {
+        if (modelInfo == null || modelInfo.isBundled() || modelInfo.isWhisper()) {
             return;
         }
 
@@ -164,11 +180,11 @@ public class VoskModelManager {
         }
 
         boolean oldCompatibility = preferences.getBoolean(KEY_COMPATIBILITY_PREFIX + modelInfo.getId(), false);
-        return oldCompatibility ? ModelLoadMode.LEGACY_COMPATIBILITY : ModelLoadMode.FULL_QUALITY;
+        return oldCompatibility ? ModelLoadMode.COMPATIBILITY : ModelLoadMode.FULL_QUALITY;
     }
 
     public void setCompatibilityMode(VoskModelInfo modelInfo, boolean enabled) {
-        setModelLoadMode(modelInfo, enabled ? ModelLoadMode.LEGACY_COMPATIBILITY : ModelLoadMode.FULL_QUALITY);
+        setModelLoadMode(modelInfo, enabled ? ModelLoadMode.COMPATIBILITY : ModelLoadMode.FULL_QUALITY);
     }
 
     public void setModelLoadMode(VoskModelInfo modelInfo, ModelLoadMode loadMode) {
@@ -184,7 +200,7 @@ public class VoskModelManager {
     }
 
     public void restoreOptionalFolders(VoskModelInfo modelInfo) {
-        if (modelInfo == null || modelInfo.isBundled()) {
+        if (modelInfo == null || modelInfo.isBundled() || modelInfo.isWhisper()) {
             return;
         }
         File modelDirectory = getModelDirectory(modelInfo);
@@ -546,9 +562,20 @@ public class VoskModelManager {
                     return;
                 }
 
-                unzipSafely(zipFile, targetDir);
-                if (!isNonEmptyDirectory(targetDir)) {
-                    throw new IOException("Downloaded archive was empty");
+                if (modelInfo.isWhisper()) {
+                    if (!targetDir.exists() && !targetDir.mkdirs()) {
+                        throw new IOException("Could not create model directory");
+                    }
+                    File destinationFile = new File(targetDir, modelInfo.getId() + ".bin");
+                    if (!zipFile.renameTo(destinationFile)) {
+                        copyDirectory(zipFile, destinationFile);
+                        zipFile.delete();
+                    }
+                } else {
+                    unzipSafely(zipFile, targetDir);
+                    if (!isNonEmptyDirectory(targetDir)) {
+                        throw new IOException("Downloaded archive was empty");
+                    }
                 }
                 clearDownloadProgress(modelInfo.getId());
                 callback.onProgress(100, downloadedBytes, totalBytes);

@@ -87,6 +87,7 @@ public class ModelsFragment extends Fragment {
         });
 
         binding.modelsRecyclerView.setLayoutManager(new LinearLayoutManager(requireContext()));
+        binding.modelsRecyclerView.setItemAnimator(null);
         binding.modelsRecyclerView.setAdapter(modelAdapter);
     }
 
@@ -210,11 +211,11 @@ public class ModelsFragment extends Fragment {
                                 "Test full quality",
                                 "Try the complete model with rescore and RNNLM enabled. Best accuracy, highest RAM use."),
                         new AppOptionDialog.Option(
-                                "Compatibility",
-                                "Keep rescore enabled for better accuracy, but turn RNNLM off to reduce memory use."),
+                                "Memory saver",
+                                "Keep rescore enabled for accuracy, but turn RNNLM off to reduce memory use."),
                         new AppOptionDialog.Option(
-                                "Super compatibility",
-                                "Turn both rescore and RNNLM off. Lowest memory use for devices that cannot load the other modes.")
+                                "Last resort",
+                                "Turn both RNNLM and rescore off. Lowest memory use, but recognition quality can drop.")
                 }, which -> {
                     if (which == 0) {
                         probeAndSelectHeavyModel(modelInfo);
@@ -235,11 +236,11 @@ public class ModelsFragment extends Fragment {
                                 "Full quality",
                                 "Use the complete model with rescore and RNNLM enabled. Best accuracy, highest RAM use."),
                         new AppOptionDialog.Option(
-                                "Compatibility",
+                                "Memory saver",
                                 "Use rescore for accuracy, but disable RNNLM to lower memory use."),
                         new AppOptionDialog.Option(
-                                "Super compatibility",
-                                "Disable both rescore and RNNLM. Use this when the model cannot load in the other modes.")
+                                "Last resort",
+                                "Disable both RNNLM and rescore. Use this only when the model cannot load in the other modes.")
                 }, which -> {
                     if (which == 0) {
                         probeAndSelectHeavyModel(modelInfo);
@@ -253,15 +254,15 @@ public class ModelsFragment extends Fragment {
 
     private void showCompatibilityModeDialog(VoskModelInfo modelInfo) {
         AppOptionDialog.show(requireContext(),
-                "Compatibility mode",
+                "Model load mode",
                 "Choose how aggressively AutoSub should reduce this model's memory use.",
                 new AppOptionDialog.Option[]{
                         new AppOptionDialog.Option(
-                                "Compatibility",
+                                "Memory saver",
                                 "Keep rescore enabled for better recognition quality, but turn RNNLM off."),
                         new AppOptionDialog.Option(
-                                "Super compatibility",
-                                "Turn both rescore and RNNLM off for the lowest memory use.")
+                                "Last resort",
+                                "Turn both RNNLM and rescore off for the lowest memory use.")
                 }, which -> {
                     VoskModelManager.ModelLoadMode mode = which == 0
                             ? VoskModelManager.ModelLoadMode.COMPATIBILITY
@@ -301,11 +302,11 @@ public class ModelsFragment extends Fragment {
                 errorMessage + "\n\nTry a lighter mode for this model.",
                 new AppOptionDialog.Option[]{
                         new AppOptionDialog.Option(
-                                "Compatibility",
+                                "Memory saver",
                                 "Retry with RNNLM off while keeping rescore enabled."),
                         new AppOptionDialog.Option(
-                                "Super compatibility",
-                                "Retry with both rescore and RNNLM off for the smallest memory footprint.")
+                                "Last resort",
+                                "Retry with both RNNLM and rescore off for the smallest memory footprint.")
                 }, which -> selectModelWithLoadMode(modelInfo, which == 0
                         ? VoskModelManager.ModelLoadMode.COMPATIBILITY
                         : VoskModelManager.ModelLoadMode.LEGACY_COMPATIBILITY));

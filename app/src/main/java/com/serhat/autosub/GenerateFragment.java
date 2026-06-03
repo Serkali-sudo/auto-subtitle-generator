@@ -118,6 +118,7 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
             }
         });
         binding.queueRecyclerView.setLayoutManager(new LinearLayoutManager(requireContext()));
+        binding.queueRecyclerView.setItemAnimator(null);
         binding.queueRecyclerView.setAdapter(queueAdapter);
     }
 

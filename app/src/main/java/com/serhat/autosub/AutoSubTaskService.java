@@ -44,6 +44,13 @@ public class AutoSubTaskService extends Service {
     private static final String PREFS_SETTINGS = "autosub_settings";
     private static final String KEY_SHORTS_MODE_WORD_BY_WORD = "shorts_mode_word_by_word";
     private static final String KEY_BATCH_FORMAT = "batch_format";
+    private static final String KEY_SUBTITLE_MAX_LENGTH = "subtitle_max_length";
+    private static final String KEY_KEEP_SENTENCES_TOGETHER = "keep_sentences_together";
+    private static final String KEY_SUPPRESS_WHISPER_SDH = "suppress_whisper_sdh";
+    private static final String KEY_WHISPER_LANGUAGE = "whisper_language";
+    private static final String KEY_TRANSLATE_SUBTITLES = "translate_subtitles";
+    private static final String KEY_TRANSLATION_SOURCE_LANGUAGE = "translation_source_language";
+    private static final String KEY_TRANSLATION_TARGET_LANGUAGE = "translation_target_language";
     private static final String KEY_SHOW_COMPLETION_NOTIFICATIONS = "show_completion_notifications";
 
     private final IBinder binder = new LocalBinder();
@@ -51,6 +58,7 @@ public class AutoSubTaskService extends Service {
     private final List<Listener> listeners = new ArrayList<>();
     private final List<VoskModelInfo> downloadQueue = new ArrayList<>();
     private final Set<Long> removedActiveQueueItemIds = new HashSet<>();
+    private final Set<Long> cancelledActiveQueueItemIds = new HashSet<>();
 
     private VoskModelManager modelManager;
     private SubtitleGenerator subtitleGenerator;
@@ -140,7 +148,7 @@ public class AutoSubTaskService extends Service {
         if (activeDownloadTask != null) {
             activeDownloadTask.cancel();
         }
-        subtitleGenerator.cancelGeneration();
+        subtitleGenerator.release();
         super.onDestroy();
     }
 
@@ -169,7 +177,11 @@ public class AutoSubTaskService extends Service {
             return;
         }
 
-        if ((modelReady || modelLoading || isMediaWorkActive()) && isSameModel(selectedModelInfo, info)) {
+        VoskModelInfo activeModelInfo = selectedModelInfo != null
+                ? selectedModelInfo
+                : subtitleGenerator.getCurrentModelInfo();
+        if ((modelReady || modelLoading || isMediaWorkActive()) && isSameModel(activeModelInfo, info)) {
+            selectedModelInfo = activeModelInfo;
             publishModelState();
             if (modelReady) {
                 startQueue();
@@ -407,6 +419,20 @@ public class AutoSubTaskService extends Service {
         if (activeQueueItem != null) {
             queueCancelRequested = true;
             subtitleGenerator.cancelGeneration();
+            if (isRemovedActiveQueueItem(activeQueueItem)) {
+                finishRemovedActiveQueueItem(activeQueueItem);
+            } else {
+                cancelledActiveQueueItemIds.add(activeQueueItem.getId());
+                activeQueueItem.setStatus(QueueItem.Status.CANCELLED);
+                activeQueueItem.setMessage("Cancelled");
+                activeQueueItem.setProgress(0);
+                queueStore.updateItem(activeQueueItem);
+                activeQueueItem = null;
+                queueRunning = false;
+                queueCancelRequested = false;
+                publishQueueItems();
+                publishIdleStateIfNoWork();
+            }
         }
     }
 
@@ -581,6 +607,16 @@ public class AutoSubTaskService extends Service {
         boolean useWordByWord = queueItem.isShortsVideo()
                 && settingsPrefs.getBoolean(KEY_SHORTS_MODE_WORD_BY_WORD, false);
         subtitleGenerator.setWordByWordMode(useWordByWord);
+        subtitleGenerator.setMaxSubtitleLength(settingsPrefs.getInt(
+                KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH));
+        subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
+                KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
+        subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));
+        subtitleGenerator.setWhisperLanguage(settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto"));
+        subtitleGenerator.setTranslationSettings(
+                settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false),
+                settingsPrefs.getString(KEY_TRANSLATION_SOURCE_LANGUAGE, "auto"),
+                settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE, "en"));
         publishState(new AutoSubTaskState(AutoSubTaskState.TaskType.SUBTITLE_GENERATION,
                 "Generating Subtitles: " + queueItem.getDisplayName(), "Extracting audio...",
                 -1, queueItem.getId(), activeDownloadModelId, activeDownloadSpeedText,
@@ -590,11 +626,10 @@ public class AutoSubTaskService extends Service {
             @Override
             public void onPartialSubtitlesGenerated(List<SubtitleGenerator.SubtitleEntry> partialSubtitles) {
                 handler.post(() -> {
-                    if (isRemovedActiveQueueItem(queueItem)) return;
+                    if (isRemovedActiveQueueItem(queueItem) || isCancelledActiveQueueItem(queueItem)) return;
                     queueItem.setSubtitles(partialSubtitles);
                     queueItem.setPreviewText(getPreviewTextHelper(partialSubtitles));
-                    queueStore.updateItem(queueItem);
-                    publishQueueItems();
+                    publishQueueItems(queueItem);
                 });
             }
 
@@ -602,6 +637,9 @@ public class AutoSubTaskService extends Service {
             public void onSubtitlesGenerated(List<SubtitleGenerator.SubtitleEntry> entries) {
                 if (isRemovedActiveQueueItem(queueItem)) {
                     handler.post(() -> finishRemovedActiveQueueItem(queueItem));
+                    return;
+                }
+                if (isCancelledActiveQueueItem(queueItem)) {
                     return;
                 }
                 queueItem.setSubtitles(entries);
@@ -613,6 +651,9 @@ public class AutoSubTaskService extends Service {
                                 handler.post(() -> {
                                     if (isRemovedActiveQueueItem(queueItem)) {
                                         finishRemovedActiveQueueItem(queueItem);
+                                        return;
+                                    }
+                                    if (isCancelledActiveQueueItem(queueItem)) {
                                         return;
                                     }
                                     queueItem.setStatus(QueueItem.Status.COMPLETED);
@@ -633,6 +674,13 @@ public class AutoSubTaskService extends Service {
                             @Override
                             public void onError(String errorMessage) {
                                 handler.post(() -> {
+                                    if (isRemovedActiveQueueItem(queueItem)) {
+                                        finishRemovedActiveQueueItem(queueItem);
+                                        return;
+                                    }
+                                    if (isCancelledActiveQueueItem(queueItem)) {
+                                        return;
+                                    }
                                     queueItem.setStatus(QueueItem.Status.FAILED);
                                     queueItem.setMessage(errorMessage);
                                     queueStore.updateItem(queueItem);
@@ -650,6 +698,9 @@ public class AutoSubTaskService extends Service {
                         finishRemovedActiveQueueItem(queueItem);
                         return;
                     }
+                    if (isCancelledActiveQueueItem(queueItem)) {
+                        return;
+                    }
                     queueItem.setStatus(QueueItem.Status.FAILED);
                     queueItem.setMessage(errorMessage);
                     queueStore.updateItem(queueItem);
@@ -661,14 +712,14 @@ public class AutoSubTaskService extends Service {
             @Override
             public void onProgressUpdate(int progress) {
                 handler.post(() -> {
-                    if (isRemovedActiveQueueItem(queueItem)) return;
-                    queueItem.setMessage(progress < 0 ? "Extracting audio..." : "Generating subtitles...");
+                    if (isRemovedActiveQueueItem(queueItem) || isCancelledActiveQueueItem(queueItem)) return;
+                    String progressMessage = subtitleProgressMessage(progress);
+                    queueItem.setMessage(progressMessage);
                     queueItem.setProgress(progress);
-                    queueStore.updateItem(queueItem);
-                    publishQueueItems();
+                    publishQueueItems(queueItem);
                     publishState(new AutoSubTaskState(AutoSubTaskState.TaskType.SUBTITLE_GENERATION,
                             "Generating Subtitles: " + queueItem.getDisplayName(),
-                            progress < 0 ? "Extracting audio..." : "Generating subtitles... " + progress + "%",
+                            progress < 0 ? progressMessage : progressMessage + " " + progress + "%",
                             progress, queueItem.getId(), activeDownloadModelId, activeDownloadSpeedText,
                             activeDownloadEtaText, activeDownloadPaused, true, queuedDownloadIds()));
                 });
@@ -681,6 +732,10 @@ public class AutoSubTaskService extends Service {
                         finishRemovedActiveQueueItem(queueItem);
                         return;
                     }
+                    if (isCancelledActiveQueueItem(queueItem)) {
+                        cancelledActiveQueueItemIds.remove(queueItem.getId());
+                        return;
+                    }
                     queueItem.setStatus(QueueItem.Status.CANCELLED);
                     queueItem.setMessage("Cancelled");
                     queueStore.updateItem(queueItem);
@@ -691,6 +746,22 @@ public class AutoSubTaskService extends Service {
                 });
             }
         });
+    }
+
+    private String subtitleProgressMessage(int progress) {
+        if (progress == SubtitleGenerator.PROGRESS_TRANSLATING) {
+            return "Translating subtitles...";
+        }
+        if (progress == SubtitleGenerator.PROGRESS_DETECTING_LANGUAGE) {
+            return "Detecting language...";
+        }
+        if (progress == SubtitleGenerator.PROGRESS_PREPARING_AUDIO) {
+            return "Preparing audio...";
+        }
+        if (progress < 0) {
+            return "Extracting audio...";
+        }
+        return "Generating subtitles...";
     }
 
     private void saveSubtitlesForQueueItemInternal(QueueItem item, String format, File outputDir, VoskModelInfo modelInfo,
@@ -906,6 +977,21 @@ public class AutoSubTaskService extends Service {
 
     private void publishQueueItems() {
         List<QueueItem> items = queueStore.getItems();
+        for (Listener listener : new ArrayList<>(listeners)) {
+            listener.onQueueItemsChanged(items);
+        }
+    }
+
+    private void publishQueueItems(QueueItem activeItemSnapshot) {
+        List<QueueItem> items = queueStore.getItems();
+        if (activeItemSnapshot != null) {
+            for (int i = 0; i < items.size(); i++) {
+                if (items.get(i).getId() == activeItemSnapshot.getId()) {
+                    items.set(i, activeItemSnapshot);
+                    break;
+                }
+            }
+        }
         for (Listener listener : new ArrayList<>(listeners)) {
             listener.onQueueItemsChanged(items);
         }
@@ -1166,8 +1252,13 @@ public class AutoSubTaskService extends Service {
         return item != null && removedActiveQueueItemIds.contains(item.getId());
     }
 
+    private boolean isCancelledActiveQueueItem(QueueItem item) {
+        return item != null && cancelledActiveQueueItemIds.contains(item.getId());
+    }
+
     private void finishRemovedActiveQueueItem(QueueItem item) {
         removedActiveQueueItemIds.remove(item.getId());
+        cancelledActiveQueueItemIds.remove(item.getId());
         if (activeQueueItem != null && activeQueueItem.getId() == item.getId()) {
             activeQueueItem = null;
         }

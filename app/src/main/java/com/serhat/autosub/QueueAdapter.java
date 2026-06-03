@@ -14,11 +14,17 @@ import com.google.android.material.progressindicator.LinearProgressIndicator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHolder> {
     private final List<QueueItem> items = new ArrayList<>();
+    private final List<QueueRowState> rowStates = new ArrayList<>();
     private QueueActionListener listener;
     private boolean selectionMode = false;
+
+    public QueueAdapter() {
+        setHasStableIds(true);
+    }
 
     public interface QueueActionListener {
         void onRetry(QueueItem item);
@@ -37,9 +43,49 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
     }
 
     public void setItems(List<QueueItem> queueItems) {
+        if (queueItems == null) {
+            queueItems = new ArrayList<>();
+        }
+
+        List<QueueRowState> newStates = new ArrayList<>(queueItems.size());
+        for (QueueItem item : queueItems) {
+            newStates.add(QueueRowState.from(item));
+        }
+
+        boolean sameStructure = items.size() == queueItems.size() && rowStates.size() == queueItems.size();
+        if (sameStructure) {
+            for (int i = 0; i < queueItems.size(); i++) {
+                if (items.get(i).getId() != queueItems.get(i).getId()) {
+                    sameStructure = false;
+                    break;
+                }
+            }
+        }
+
+        if (!sameStructure) {
+            items.clear();
+            items.addAll(queueItems);
+            rowStates.clear();
+            rowStates.addAll(newStates);
+            notifyDataSetChanged();
+            return;
+        }
+
+        List<Integer> changedPositions = new ArrayList<>();
+        for (int i = 0; i < newStates.size(); i++) {
+            if (!newStates.get(i).equals(rowStates.get(i))) {
+                changedPositions.add(i);
+            }
+        }
+
         items.clear();
         items.addAll(queueItems);
-        notifyDataSetChanged();
+        rowStates.clear();
+        rowStates.addAll(newStates);
+
+        for (int position : changedPositions) {
+            notifyItemChanged(position);
+        }
     }
 
     public boolean isSelectionMode() {
@@ -89,6 +135,15 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         return items.size();
     }
 
+    @Override
+    public long getItemId(int position) {
+        if (position < 0 || position >= items.size()) {
+            return RecyclerView.NO_ID;
+        }
+        long id = items.get(position).getId();
+        return id == 0 ? RecyclerView.NO_ID : id;
+    }
+
     class QueueViewHolder extends RecyclerView.ViewHolder {
         TextView titleTV, statusTV, outputTV;
         LinearProgressIndicator progressIndicator;
@@ -96,6 +151,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         android.widget.ImageView queueThumbIV;
         android.widget.ImageButton queueEditBT;
         android.widget.CheckBox queueSelectCB;
+        private String boundThumbnailPath;
 
         QueueViewHolder(@NonNull View itemView) {
             super(itemView);
@@ -155,12 +211,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
                 if (listener != null) listener.onSelectionChanged();
             });
 
-            // Load visual thumbnail
-            if (!item.getThumbnailPath().isEmpty() && new java.io.File(item.getThumbnailPath()).exists()) {
-                queueThumbIV.setImageURI(android.net.Uri.fromFile(new java.io.File(item.getThumbnailPath())));
-            } else {
-                queueThumbIV.setImageResource(R.drawable.ri_file_video_line);
-            }
+            bindThumbnail(item);
 
             retryBT.setOnClickListener(v -> {
                 if (listener != null) listener.onRetry(item);
@@ -206,13 +257,84 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         private String statusSuffix(QueueItem item) {
             if (item.getStatus() == QueueItem.Status.PROCESSING || item.getStatus() == QueueItem.Status.EXPORTING) {
                 if (item.getProgress() < 0) {
-                    return item.getStatus() == QueueItem.Status.EXPORTING
-                            ? " - exporting video"
-                            : " - extracting audio";
+                    String message = item.getMessage();
+                    if (message != null && !message.trim().isEmpty()) {
+                        return " - " + message.trim();
+                    }
+                    return item.getStatus() == QueueItem.Status.EXPORTING ? " - exporting video" : "";
                 }
                 return " - " + item.getProgress() + "%";
             }
             return "";
+        }
+
+        private void bindThumbnail(QueueItem item) {
+            String thumbnailPath = item.getThumbnailPath();
+            if (Objects.equals(boundThumbnailPath, thumbnailPath)) {
+                return;
+            }
+            boundThumbnailPath = thumbnailPath;
+            if (!thumbnailPath.isEmpty() && new java.io.File(thumbnailPath).exists()) {
+                queueThumbIV.setImageURI(android.net.Uri.fromFile(new java.io.File(thumbnailPath)));
+            } else {
+                queueThumbIV.setImageResource(R.drawable.ri_file_video_line);
+            }
+        }
+    }
+
+    private static class QueueRowState {
+        private final long id;
+        private final String displayName;
+        private final QueueItem.Status status;
+        private final int progress;
+        private final String outputPath;
+        private final String message;
+        private final String previewText;
+        private final String softVideoPath;
+        private final String hardVideoPath;
+        private final String thumbnailPath;
+        private final boolean selected;
+
+        private QueueRowState(QueueItem item) {
+            id = item.getId();
+            displayName = item.getDisplayName();
+            status = item.getStatus();
+            progress = item.getProgress();
+            outputPath = item.getOutputPath();
+            message = item.getMessage();
+            previewText = item.getPreviewText();
+            softVideoPath = item.getSoftVideoPath();
+            hardVideoPath = item.getHardVideoPath();
+            thumbnailPath = item.getThumbnailPath();
+            selected = item.isSelected();
+        }
+
+        static QueueRowState from(QueueItem item) {
+            return new QueueRowState(item);
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (!(obj instanceof QueueRowState)) return false;
+            QueueRowState other = (QueueRowState) obj;
+            return id == other.id
+                    && progress == other.progress
+                    && selected == other.selected
+                    && status == other.status
+                    && Objects.equals(displayName, other.displayName)
+                    && Objects.equals(outputPath, other.outputPath)
+                    && Objects.equals(message, other.message)
+                    && Objects.equals(previewText, other.previewText)
+                    && Objects.equals(softVideoPath, other.softVideoPath)
+                    && Objects.equals(hardVideoPath, other.hardVideoPath)
+                    && Objects.equals(thumbnailPath, other.thumbnailPath);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(id, displayName, status, progress, outputPath, message, previewText,
+                    softVideoPath, hardVideoPath, thumbnailPath, selected);
         }
     }
 }
