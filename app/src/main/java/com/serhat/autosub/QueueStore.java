@@ -15,7 +15,7 @@ import java.util.List;
 
 public class QueueStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "autosub_queue.db";
-    private static final int DB_VERSION = 5;
+    private static final int DB_VERSION = 6;
     private static final String TABLE = "queue_items";
 
     public QueueStore(Context context) {
@@ -38,6 +38,9 @@ public class QueueStore extends SQLiteOpenHelper {
                 "message TEXT," +
                 "preview_text TEXT," +
                 "subtitles_json TEXT," +
+                "translation_source_language TEXT," +
+                "translation_target_language TEXT," +
+                "translation_status TEXT," +
                 "shorts_video INTEGER DEFAULT 0," +
                 "shorts_caption_x REAL DEFAULT 0.5," +
                 "shorts_caption_y REAL DEFAULT 0.5," +
@@ -70,6 +73,11 @@ public class QueueStore extends SQLiteOpenHelper {
                 db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN shorts_caption_scale REAL DEFAULT 1.0");
                 db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN subtitle_caption_scale REAL DEFAULT 1.0");
             }
+            if (oldVersion < 6) {
+                db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN translation_source_language TEXT");
+                db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN translation_target_language TEXT");
+                db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN translation_status TEXT");
+            }
         }
     }
 
@@ -87,6 +95,9 @@ public class QueueStore extends SQLiteOpenHelper {
         values.put("message", item.getMessage());
         values.put("preview_text", item.getPreviewText());
         values.put("subtitles_json", subtitlesToJson(item.getSubtitles()));
+        values.put("translation_source_language", item.getTranslationSourceLanguage());
+        values.put("translation_target_language", item.getTranslationTargetLanguage());
+        values.put("translation_status", item.getTranslationStatus());
         values.put("shorts_video", item.isShortsVideo() ? 1 : 0);
         values.put("shorts_caption_x", item.getShortsCaptionX());
         values.put("shorts_caption_y", item.getShortsCaptionY());
@@ -114,6 +125,9 @@ public class QueueStore extends SQLiteOpenHelper {
         values.put("message", item.getMessage());
         values.put("preview_text", item.getPreviewText());
         values.put("subtitles_json", subtitlesToJson(item.getSubtitles()));
+        values.put("translation_source_language", item.getTranslationSourceLanguage());
+        values.put("translation_target_language", item.getTranslationTargetLanguage());
+        values.put("translation_status", item.getTranslationStatus());
         values.put("shorts_video", item.isShortsVideo() ? 1 : 0);
         values.put("shorts_caption_x", item.getShortsCaptionX());
         values.put("shorts_caption_y", item.getShortsCaptionY());
@@ -151,6 +165,9 @@ public class QueueStore extends SQLiteOpenHelper {
                 item.setMessage(cursor.getString(cursor.getColumnIndexOrThrow("message")));
                 item.setPreviewText(cursor.getString(cursor.getColumnIndexOrThrow("preview_text")));
                 item.setSubtitles(subtitlesFromJson(cursor.getString(cursor.getColumnIndexOrThrow("subtitles_json"))));
+                item.setTranslationSourceLanguage(getOptionalString(cursor, "translation_source_language", ""));
+                item.setTranslationTargetLanguage(getOptionalString(cursor, "translation_target_language", ""));
+                item.setTranslationStatus(getOptionalString(cursor, "translation_status", ""));
                 item.setShortsVideo(cursor.getInt(cursor.getColumnIndexOrThrow("shorts_video")) == 1);
                 item.setShortsCaptionX(getOptionalFloat(cursor, "shorts_caption_x", 0.5f));
                 item.setShortsCaptionY(getOptionalFloat(cursor, "shorts_caption_y", 0.5f));
@@ -184,6 +201,15 @@ public class QueueStore extends SQLiteOpenHelper {
         return cursor.getInt(index);
     }
 
+    private String getOptionalString(Cursor cursor, String columnName, String defaultValue) {
+        int index = cursor.getColumnIndex(columnName);
+        if (index < 0 || cursor.isNull(index)) {
+            return defaultValue;
+        }
+        String value = cursor.getString(index);
+        return value == null ? defaultValue : value;
+    }
+
     private String subtitlesToJson(List<SubtitleGenerator.SubtitleEntry> subtitles) {
         JSONArray array = new JSONArray();
         if (subtitles == null) return array.toString();
@@ -194,6 +220,7 @@ public class QueueStore extends SQLiteOpenHelper {
                 object.put("start", entry.getStartTime());
                 object.put("end", entry.getEndTime());
                 object.put("text", entry.getText());
+                object.put("translationText", entry.getTranslationText());
                 JSONArray words = new JSONArray();
                 for (WordTiming word : entry.getWords()) {
                     JSONObject wordObject = new JSONObject();
@@ -236,6 +263,7 @@ public class QueueStore extends SQLiteOpenHelper {
                         object.optString("end"),
                         object.optString("text"),
                         words));
+                subtitles.get(subtitles.size() - 1).setTranslationText(object.optString("translationText", ""));
             }
         } catch (Exception ignored) {
         }

@@ -18,6 +18,7 @@ public class WhisperContext {
     private long ptr;
     private final Object releaseLock = new Object();
     private volatile boolean released = false;
+    private volatile String detectedLanguage;
 
     // Meet Whisper C++ constraint: Don't access from more than one thread at a time.
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -76,8 +77,10 @@ public class WhisperContext {
                     int numThreads = WhisperCpuConfig.getPreferredThreadCount();
                     Log.d(LOG_TAG, "Selecting " + numThreads + " threads");
 
+                    detectedLanguage = null;
                     WhisperLib.Companion.fullTranscribe(ptr, numThreads, data, language,
                             maxSegmentLength, suppressNonSpeechTokens, callback);
+                    detectedLanguage = WhisperLib.Companion.getDetectedLanguage(ptr);
 
                     int textCount = WhisperLib.Companion.getTextSegmentCount(ptr);
                     StringBuilder builder = new StringBuilder();
@@ -108,6 +111,10 @@ public class WhisperContext {
                 }
             }
         });
+    }
+
+    public String getDetectedLanguage() {
+        return detectedLanguage;
     }
 
     public String benchMemory(final int nthreads) {
@@ -355,6 +362,8 @@ class WhisperLib {
         public native long getTextSegmentT0(long contextPtr, int index);
 
         public native long getTextSegmentT1(long contextPtr, int index);
+
+        public native String getDetectedLanguage(long contextPtr);
 
         public native String getSystemInfo();
 

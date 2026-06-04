@@ -58,6 +58,15 @@
                         android:textStyle="bold" />
 
                     <ImageButton
+                        android:id="@+id/queueTranslateBT"
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
+                        android:src="@drawable/ri_translate_2"
+                        android:tint="?attr/colorPrimary"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Translate subtitles" />
+
+                    <ImageButton
                         android:id="@+id/queueEditBT"
                         android:layout_width="36dp"
                         android:layout_height="36dp"

@@ -113,47 +113,206 @@ static bool json_builder_append(struct json_builder *builder, const char *text) 
     return json_builder_append_len(builder, text, strlen(text));
 }
 
+static bool json_builder_append_replacement_char(struct json_builder *builder) {
+    return json_builder_append(builder, "\\ufffd");
+}
+
 static bool json_builder_append_escaped_string(struct json_builder *builder, const char *text) {
     if (!json_builder_append(builder, "\"")) {
         return false;
     }
 
-    for (const unsigned char *c = (const unsigned char *) text; c != NULL && *c != '\0'; c++) {
+    for (const unsigned char *c = (const unsigned char *) text; c != NULL && *c != '\0';) {
         char escaped[7];
         switch (*c) {
             case '"':
                 if (!json_builder_append(builder, "\\\"")) return false;
+                c++;
                 break;
             case '\\':
                 if (!json_builder_append(builder, "\\\\")) return false;
+                c++;
                 break;
             case '\b':
                 if (!json_builder_append(builder, "\\b")) return false;
+                c++;
                 break;
             case '\f':
                 if (!json_builder_append(builder, "\\f")) return false;
+                c++;
                 break;
             case '\n':
                 if (!json_builder_append(builder, "\\n")) return false;
+                c++;
                 break;
             case '\r':
                 if (!json_builder_append(builder, "\\r")) return false;
+                c++;
                 break;
             case '\t':
                 if (!json_builder_append(builder, "\\t")) return false;
+                c++;
                 break;
             default:
                 if (*c < 0x20) {
                     snprintf(escaped, sizeof(escaped), "\\u%04x", *c);
                     if (!json_builder_append(builder, escaped)) return false;
-                } else if (!json_builder_append_len(builder, (const char *) c, 1)) {
-                    return false;
+                    c++;
+                } else if (*c < 0x80) {
+                    if (!json_builder_append_len(builder, (const char *) c, 1)) return false;
+                    c++;
+                } else {
+                    size_t len = 0;
+                    if ((*c & 0xE0) == 0xC0) {
+                        len = 2;
+                    } else if ((*c & 0xF0) == 0xE0) {
+                        len = 3;
+                    } else if ((*c & 0xF8) == 0xF0) {
+                        len = 4;
+                    }
+                    const size_t remaining = strlen((const char *) c);
+                    bool valid = len > 0 && len <= remaining;
+                    for (size_t i = 1; valid && i < len; i++) {
+                        valid = (c[i] & 0xC0) == 0x80;
+                    }
+                    if (valid) {
+                        if (!json_builder_append_len(builder, (const char *) c, len)) return false;
+                        c += len;
+                    } else {
+                        if (!json_builder_append_replacement_char(builder)) return false;
+                        c++;
+                    }
                 }
                 break;
         }
     }
 
     return json_builder_append(builder, "\"");
+}
+
+struct utf16_builder {
+    jchar *data;
+    size_t len;
+    size_t cap;
+};
+
+static jstring new_empty_string(JNIEnv *env) {
+    const jchar empty[] = {0};
+    return (*env)->NewString(env, empty, 0);
+}
+
+static bool utf16_builder_reserve(struct utf16_builder *builder, size_t extra) {
+    if (builder->len + extra <= builder->cap) {
+        return true;
+    }
+
+    size_t next_cap = builder->cap == 0 ? 256 : builder->cap;
+    while (builder->len + extra > next_cap) {
+        next_cap *= 2;
+    }
+
+    jchar *next_data = (jchar *) realloc(builder->data, next_cap * sizeof(jchar));
+    if (next_data == NULL) {
+        return false;
+    }
+
+    builder->data = next_data;
+    builder->cap = next_cap;
+    return true;
+}
+
+static bool utf16_builder_append_codepoint(struct utf16_builder *builder, unsigned int codepoint) {
+    if (codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+        codepoint = 0xFFFD;
+    }
+
+    if (codepoint <= 0xFFFF) {
+        if (!utf16_builder_reserve(builder, 1)) {
+            return false;
+        }
+        builder->data[builder->len++] = (jchar) codepoint;
+        return true;
+    }
+
+    if (!utf16_builder_reserve(builder, 2)) {
+        return false;
+    }
+    codepoint -= 0x10000;
+    builder->data[builder->len++] = (jchar) (0xD800 + (codepoint >> 10));
+    builder->data[builder->len++] = (jchar) (0xDC00 + (codepoint & 0x3FF));
+    return true;
+}
+
+/*
+ * CheckJNI aborts when NewStringUTF receives invalid Modified UTF-8. Whisper can
+ * return partial byte-pair tokens, so decode UTF-8 ourselves and replace broken
+ * byte sequences before creating the Java string.
+ */
+static jstring new_whisper_string(JNIEnv *env, const char *text) {
+    struct utf16_builder builder = {};
+    if (text == NULL) {
+        text = "";
+    }
+
+    const unsigned char *end = (const unsigned char *) text + strlen(text);
+    for (const unsigned char *c = (const unsigned char *) text; c < end;) {
+        unsigned int codepoint = 0xFFFD;
+        size_t len = 0;
+        const size_t remaining = (size_t) (end - c);
+
+        if (*c < 0x80) {
+            codepoint = *c;
+            len = 1;
+        } else if ((*c & 0xE0) == 0xC0) {
+            len = 2;
+            if (remaining >= len && (c[1] & 0xC0) == 0x80) {
+                codepoint = ((*c & 0x1F) << 6) | (c[1] & 0x3F);
+                if (codepoint < 0x80) {
+                    codepoint = 0xFFFD;
+                }
+            } else {
+                len = 1;
+            }
+        } else if ((*c & 0xF0) == 0xE0) {
+            len = 3;
+            if (remaining >= len && (c[1] & 0xC0) == 0x80 && (c[2] & 0xC0) == 0x80) {
+                codepoint = ((*c & 0x0F) << 12) | ((c[1] & 0x3F) << 6) | (c[2] & 0x3F);
+                if (codepoint < 0x800) {
+                    codepoint = 0xFFFD;
+                }
+            } else {
+                len = 1;
+            }
+        } else if ((*c & 0xF8) == 0xF0) {
+            len = 4;
+            if (remaining >= len && (c[1] & 0xC0) == 0x80 && (c[2] & 0xC0) == 0x80 && (c[3] & 0xC0) == 0x80) {
+                codepoint = ((*c & 0x07) << 18) | ((c[1] & 0x3F) << 12) | ((c[2] & 0x3F) << 6) | (c[3] & 0x3F);
+                if (codepoint < 0x10000) {
+                    codepoint = 0xFFFD;
+                }
+            } else {
+                len = 1;
+            }
+        } else {
+            len = 1;
+        }
+
+        if (!utf16_builder_append_codepoint(&builder, codepoint)) {
+            free(builder.data);
+            return new_empty_string(env);
+        }
+        c += len;
+    }
+
+    jstring result = builder.len == 0
+            ? new_empty_string(env)
+            : (*env)->NewString(env, builder.data, (jsize) builder.len);
+    free(builder.data);
+    return result;
+}
+
+static jstring new_json_string(JNIEnv *env, const char *json) {
+    return new_whisper_string(env, json == NULL ? "[]" : json);
 }
 
 static char *empty_json_array(void) {
@@ -416,8 +575,8 @@ void new_segment_callback(struct whisper_context * ctx, struct whisper_state * s
         const char *safe_token_timings_json = token_timings_json == NULL ? "[]" : token_timings_json;
         const char *safe_text = text == NULL ? "" : text;
 
-        jstring jtext = (*env)->NewStringUTF(env, safe_text);
-        jstring jtoken_timings_json = (*env)->NewStringUTF(env, safe_token_timings_json);
+        jstring jtext = new_whisper_string(env, safe_text);
+        jstring jtoken_timings_json = new_json_string(env, safe_token_timings_json);
         (*env)->CallVoidMethod(
                 env,
                 callback_state->callback,
@@ -592,7 +751,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_getTextSegment(
     UNUSED(thiz);
     struct whisper_context *context = (struct whisper_context *) context_ptr;
     const char *text = whisper_full_get_segment_text(context, index);
-    jstring string = (*env)->NewStringUTF(env, text);
+    jstring string = new_whisper_string(env, text);
     return string;
 }
 
@@ -610,6 +769,22 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_getTextSegmentT1(
     UNUSED(thiz);
     struct whisper_context *context = (struct whisper_context *) context_ptr;
     return whisper_full_get_segment_t1(context, index);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_whispercpp_whisper_WhisperLib_00024Companion_getDetectedLanguage(
+        JNIEnv *env, jobject thiz, jlong context_ptr) {
+    UNUSED(thiz);
+    struct whisper_context *context = (struct whisper_context *) context_ptr;
+    int lang_id = whisper_full_lang_id(context);
+    if (lang_id < 0) {
+        return NULL;
+    }
+    const char *language = whisper_lang_str(lang_id);
+    if (language == NULL) {
+        return NULL;
+    }
+    return (*env)->NewStringUTF(env, language);
 }
 
 JNIEXPORT jstring JNICALL

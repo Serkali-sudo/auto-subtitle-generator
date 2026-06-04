@@ -1121,6 +1121,9 @@ public class MainViewModel extends AndroidViewModel {
                 );
                 
                 queueItem.setSubtitles(entries);
+                queueItem.setTranslationSourceLanguage(subtitleGenerator.getResolvedTranslationSourceLanguage());
+                queueItem.setTranslationTargetLanguage(subtitleGenerator.getTranslationTargetLanguage());
+                queueItem.setTranslationStatus(SubtitleGenerator.hasTranslatedSubtitles(entries) ? "translated" : "");
                 queueItem.setPreviewText(getPreviewTextHelper(entries));
                 subtitleGenerator.saveSubtitlesToFile(entries, batchFormat.getValue(), queueItem.getVideoUri(), new SubtitleGenerator.SubtitleSaveCallback() {
                     @Override
@@ -1273,13 +1276,17 @@ public class MainViewModel extends AndroidViewModel {
         item.setHardVideoPath("");
         item.setPreviewText("");
         item.setSubtitles(new ArrayList<>());
+        item.setTranslationSourceLanguage("");
+        item.setTranslationTargetLanguage("");
+        item.setTranslationStatus("");
         refreshQueue();
         startQueue();
     }
 
     public void removeQueueItem(QueueItem item) {
         boolean removingActiveItem = isSameQueueItem(item, activeQueueItem)
-                || item.getStatus() == QueueItem.Status.PROCESSING;
+                || item.getStatus() == QueueItem.Status.PROCESSING
+                || item.getStatus() == QueueItem.Status.TRANSLATING;
         if (removingActiveItem) {
             removedActiveQueueItemIds.add(item.getId());
         }
@@ -1316,7 +1323,9 @@ public class MainViewModel extends AndroidViewModel {
             }
             if (!toRemove.isEmpty()) {
                 for (QueueItem item : toRemove) {
-                    if (isSameQueueItem(item, activeQueueItem) || item.getStatus() == QueueItem.Status.PROCESSING) {
+                    if (isSameQueueItem(item, activeQueueItem)
+                            || item.getStatus() == QueueItem.Status.PROCESSING
+                            || item.getStatus() == QueueItem.Status.TRANSLATING) {
                         removingActiveItem = true;
                         removedActiveQueueItemIds.add(item.getId());
                         removedActiveIds.add(item.getId());
@@ -1535,6 +1544,16 @@ public class MainViewModel extends AndroidViewModel {
         }
     }
 
+    public void updateSubtitle(int position, String originalText, String translationText) {
+        List<SubtitleGenerator.SubtitleEntry> entries = subtitleEntries.getValue();
+        if (entries != null && position >= 0 && position < entries.size()) {
+            entries.get(position).setText(originalText);
+            entries.get(position).setTranslationText(translationText);
+            subtitleEntries.setValue(new ArrayList<>(entries));
+            persistCurrentPreviewEdits(entries);
+        }
+    }
+
     public void deleteSubtitle(int position) {
         List<SubtitleGenerator.SubtitleEntry> entries = subtitleEntries.getValue();
         if (entries != null && position >= 0 && position < entries.size()) {
@@ -1558,14 +1577,20 @@ public class MainViewModel extends AndroidViewModel {
 
         SubtitleGenerator.SubtitleEntry mergedEntry = entries.get(startPosition);
         StringBuilder mergedText = new StringBuilder(mergedEntry.getText());
+        StringBuilder mergedTranslation = new StringBuilder(mergedEntry.getTranslationText());
         List<WordTiming> mergedWords = new ArrayList<>(mergedEntry.getWords());
 
         for (int i = startPosition + 1; i <= endPosition; i++) {
             mergedText.append(" ").append(entries.get(i).getText());
+            if (entries.get(i).hasTranslation()) {
+                if (mergedTranslation.length() > 0) mergedTranslation.append(" ");
+                mergedTranslation.append(entries.get(i).getTranslationText());
+            }
             mergedWords.addAll(entries.get(i).getWords());
         }
 
         mergedEntry.setText(mergedText.toString());
+        mergedEntry.setTranslationText(mergedTranslation.toString());
         mergedEntry.setEndTime(entries.get(endPosition).getEndTime());
         mergedEntry.setWords(mergedWords);
 
@@ -1605,6 +1630,11 @@ public class MainViewModel extends AndroidViewModel {
     }
 
     public void saveSubtitlesInFormat(String format, File outputDir, SubtitleGenerator.SubtitleSaveCallback callback) {
+        saveSubtitlesInFormat(format, outputDir, SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void saveSubtitlesInFormat(String format, File outputDir, SubtitleGenerator.SubtitleLayerMode layerMode,
+                                      SubtitleGenerator.SubtitleSaveCallback callback) {
         Uri videoUri = currentVideoUri.getValue();
         List<SubtitleGenerator.SubtitleEntry> entries = subtitleEntries.getValue();
         if (videoUri == null || entries == null || entries.isEmpty()) {
@@ -1614,7 +1644,7 @@ public class MainViewModel extends AndroidViewModel {
 
         if (useTaskService()) {
             VoskModelInfo modelInfo = selectedModelInfo.getValue();
-            runWhenTaskServiceReady(true, () -> taskService.savePreviewSubtitles(entries, format, videoUri, outputDir, modelInfo,
+            runWhenTaskServiceReady(true, () -> taskService.savePreviewSubtitles(entries, format, videoUri, outputDir, modelInfo, layerMode,
                     new SubtitleGenerator.SubtitleSaveCallback() {
                         @Override
                         public void onSubtitlesSaved(String filePath) {
@@ -1622,8 +1652,8 @@ public class MainViewModel extends AndroidViewModel {
                                 QueueItem qItem = selectedQueueItem.getValue();
                                 if (qItem != null) {
                                     String f = format.toLowerCase(Locale.getDefault());
-                                    if ("srt".equals(f)) qItem.setSrtPath(filePath);
-                                    if ("vtt".equals(f)) qItem.setVttPath(filePath);
+                                    if ("srt".equals(f) && layerMode == SubtitleGenerator.SubtitleLayerMode.ORIGINAL) qItem.setSrtPath(filePath);
+                                    if ("vtt".equals(f) && layerMode == SubtitleGenerator.SubtitleLayerMode.ORIGINAL) qItem.setVttPath(filePath);
                                     qItem.setOutputPath(filePath);
                                     refreshQueue();
                                 }
@@ -1639,18 +1669,18 @@ public class MainViewModel extends AndroidViewModel {
             return;
         }
 
-        subtitleGenerator.saveSubtitlesToFile(entries, format, videoUri, outputDir, new SubtitleGenerator.SubtitleSaveCallback() {
+        subtitleGenerator.saveSubtitlesToFile(entries, format, videoUri, outputDir, layerMode, new SubtitleGenerator.SubtitleSaveCallback() {
             @Override
             public void onSubtitlesSaved(String filePath) {
                 handler.post(() -> {
                     registerExport(filePath, ExportRecord.TYPE_SUBTITLE, videoUri, getDisplayNameHelper(videoUri),
-                            format.toLowerCase(Locale.getDefault()) + "-subtitles", format);
+                            format.toLowerCase(Locale.getDefault()) + "-" + layerMode.name().toLowerCase(Locale.US) + "-subtitles", format);
                     QueueItem qItem = selectedQueueItem.getValue();
                     if (qItem != null) {
                         String f = format.toLowerCase(Locale.getDefault());
-                        if ("srt".equals(f)) {
+                        if ("srt".equals(f) && layerMode == SubtitleGenerator.SubtitleLayerMode.ORIGINAL) {
                             qItem.setSrtPath(filePath);
-                        } else if ("vtt".equals(f)) {
+                        } else if ("vtt".equals(f) && layerMode == SubtitleGenerator.SubtitleLayerMode.ORIGINAL) {
                             qItem.setVttPath(filePath);
                         }
                         qItem.setOutputPath(filePath);
@@ -1678,6 +1708,13 @@ public class MainViewModel extends AndroidViewModel {
 
     public void exportVideoWithSubtitles(boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles,
                                          File outputDir, SubtitleGenerator.VideoExportCallback callback) {
+        exportVideoWithSubtitles(burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir,
+                SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void exportVideoWithSubtitles(boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles,
+                                         File outputDir, SubtitleGenerator.SubtitleLayerMode layerMode,
+                                         SubtitleGenerator.VideoExportCallback callback) {
         Uri videoUri = currentVideoUri.getValue();
         List<SubtitleGenerator.SubtitleEntry> entries = subtitleEntries.getValue();
         if (videoUri == null || entries == null || entries.isEmpty()) {
@@ -1689,7 +1726,7 @@ public class MainViewModel extends AndroidViewModel {
             SubtitleGenerator.ShortsSubtitleStyle shortsStyle = getSelectedShortsSubtitleStyle();
             VoskModelInfo modelInfo = selectedModelInfo.getValue();
             runWhenTaskServiceReady(true, () -> taskService.exportPreviewVideo(videoUri, entries, burnSubtitles, fontName,
-                    shortsStyle, forceMp4SoftSubtitles, outputDir, modelInfo, new SubtitleGenerator.VideoExportCallback() {
+                    shortsStyle, forceMp4SoftSubtitles, outputDir, modelInfo, layerMode, new SubtitleGenerator.VideoExportCallback() {
                         @Override
                         public void onVideoExported(String filePath) {
                             handler.post(() -> {
@@ -1718,12 +1755,12 @@ public class MainViewModel extends AndroidViewModel {
 
         SubtitleGenerator.ShortsSubtitleStyle shortsStyle = getSelectedShortsSubtitleStyle();
         subtitleGenerator.exportVideoWithSubtitles(videoUri, entries, burnSubtitles, fontName, shortsStyle,
-                forceMp4SoftSubtitles, outputDir, new SubtitleGenerator.VideoExportCallback() {
+                forceMp4SoftSubtitles, outputDir, layerMode, new SubtitleGenerator.VideoExportCallback() {
             @Override
             public void onVideoExported(String filePath) {
                 handler.post(() -> {
                     registerExport(filePath, ExportRecord.TYPE_VIDEO, videoUri, getDisplayNameHelper(videoUri),
-                            burnSubtitles ? "hard-subtitles" : "soft-subtitles",
+                            (burnSubtitles ? "hard-" : "soft-") + layerMode.name().toLowerCase(Locale.US) + "-subtitles",
                             filePath.toLowerCase(Locale.getDefault()).endsWith(".mkv") ? "mkv" : "mp4");
                     QueueItem qItem = selectedQueueItem.getValue();
                     if (qItem != null) {
@@ -1804,7 +1841,93 @@ public class MainViewModel extends AndroidViewModel {
         saveSubtitlesForQueueItem(item, format, null, callback);
     }
 
+    public void translateQueueItem(QueueItem item, SubtitleGenerator.TranslationCallback callback) {
+        if (item == null || item.getSubtitles().isEmpty()) {
+            callback.onError("No subtitles available to translate");
+            return;
+        }
+        if (useTaskService()) {
+            String sourceLanguage = settingsPrefs.getString(KEY_TRANSLATION_SOURCE_LANGUAGE, "auto");
+            if ("auto".equalsIgnoreCase(sourceLanguage) && !item.getTranslationSourceLanguage().isEmpty()) {
+                sourceLanguage = item.getTranslationSourceLanguage();
+            }
+            String effectiveSourceLanguage = sourceLanguage;
+            runWhenTaskServiceReady(true, () -> taskService.translateQueueItem(item,
+                    effectiveSourceLanguage,
+                    settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE, "en"),
+                    callback));
+            return;
+        }
+
+        item.setStatus(QueueItem.Status.TRANSLATING);
+        item.setProgress(-1);
+        item.setMessage("Translating subtitles...");
+        item.setTranslationStatus("translating");
+        refreshQueue();
+
+        subtitleGenerator.setTranslationSettings(true,
+                effectiveTranslationSourceFor(item),
+                settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE, "en"));
+        subtitleGenerator.translateExistingSubtitles(item.getSubtitles(), new SubtitleGenerator.TranslationCallback() {
+            @Override
+            public void onTranslated(List<SubtitleGenerator.SubtitleEntry> subtitleEntries, String sourceLanguage, String targetLanguage) {
+                handler.post(() -> {
+                    item.setSubtitles(subtitleEntries);
+                    item.setTranslationSourceLanguage(sourceLanguage);
+                    item.setTranslationTargetLanguage(targetLanguage);
+                    item.setTranslationStatus("translated");
+                    item.setStatus(QueueItem.Status.COMPLETED);
+                    item.setProgress(100);
+                    item.setMessage("Translated subtitles");
+                    item.setPreviewText(getPreviewTextHelper(subtitleEntries));
+                    QueueItem selected = selectedQueueItem.getValue();
+                    if (selected != null && selected.getId() == item.getId()) {
+                        MainViewModel.this.subtitleEntries.setValue(new ArrayList<>(subtitleEntries));
+                    }
+                    refreshQueue();
+                    callback.onTranslated(subtitleEntries, sourceLanguage, targetLanguage);
+                });
+            }
+
+            @Override
+            public void onError(String errorMessage) {
+                handler.post(() -> {
+                    item.setStatus(QueueItem.Status.COMPLETED);
+                    item.setProgress(100);
+                    item.setTranslationStatus("failed");
+                    item.setMessage("Translation failed: " + errorMessage);
+                    refreshQueue();
+                    callback.onError(errorMessage);
+                });
+            }
+
+            @Override
+            public void onProgressUpdate(int progress) {
+                handler.post(() -> {
+                    item.setProgress(progress);
+                    item.setMessage(progress < 0 ? "Translating subtitles..." : "Translating subtitles... " + progress + "%");
+                    refreshQueue();
+                    callback.onProgressUpdate(progress);
+                });
+            }
+        });
+    }
+
+    private String effectiveTranslationSourceFor(QueueItem item) {
+        String sourceLanguage = settingsPrefs.getString(KEY_TRANSLATION_SOURCE_LANGUAGE, "auto");
+        if ("auto".equalsIgnoreCase(sourceLanguage) && item != null && !item.getTranslationSourceLanguage().isEmpty()) {
+            return item.getTranslationSourceLanguage();
+        }
+        return sourceLanguage;
+    }
+
     public void saveSubtitlesForQueueItem(QueueItem item, String format, File outputDir,
+                                          SubtitleGenerator.SubtitleSaveCallback callback) {
+        saveSubtitlesForQueueItem(item, format, outputDir, SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void saveSubtitlesForQueueItem(QueueItem item, String format, File outputDir,
+                                          SubtitleGenerator.SubtitleLayerMode layerMode,
                                           SubtitleGenerator.SubtitleSaveCallback callback) {
         Uri videoUri = item.getVideoUri();
         List<SubtitleGenerator.SubtitleEntry> entries = item.getSubtitles();
@@ -1815,7 +1938,7 @@ public class MainViewModel extends AndroidViewModel {
 
         if (useTaskService()) {
             VoskModelInfo modelInfo = selectedModelInfo.getValue();
-            runWhenTaskServiceReady(true, () -> taskService.saveSubtitlesForQueueItem(item, format, outputDir, modelInfo, callback));
+            runWhenTaskServiceReady(true, () -> taskService.saveSubtitlesForQueueItem(item, format, outputDir, modelInfo, layerMode, callback));
             return;
         }
 
@@ -1824,16 +1947,16 @@ public class MainViewModel extends AndroidViewModel {
         item.setMessage("Saving subtitles...");
         refreshQueue();
 
-        subtitleGenerator.saveSubtitlesToFile(entries, format, videoUri, outputDir, new SubtitleGenerator.SubtitleSaveCallback() {
+        subtitleGenerator.saveSubtitlesToFile(entries, format, videoUri, outputDir, layerMode, new SubtitleGenerator.SubtitleSaveCallback() {
             @Override
             public void onSubtitlesSaved(String filePath) {
                 handler.post(() -> {
                     registerExport(filePath, ExportRecord.TYPE_SUBTITLE, videoUri, item.getDisplayName(),
-                            format.toLowerCase(Locale.getDefault()) + "-subtitles", format);
+                            format.toLowerCase(Locale.getDefault()) + "-" + layerMode.name().toLowerCase(Locale.US) + "-subtitles", format);
                     String f = format.toLowerCase(Locale.getDefault());
-                    if ("srt".equals(f)) {
+                    if ("srt".equals(f) && layerMode == SubtitleGenerator.SubtitleLayerMode.ORIGINAL) {
                         item.setSrtPath(filePath);
-                    } else if ("vtt".equals(f)) {
+                    } else if ("vtt".equals(f) && layerMode == SubtitleGenerator.SubtitleLayerMode.ORIGINAL) {
                         item.setVttPath(filePath);
                     }
                     item.setStatus(QueueItem.Status.COMPLETED);
@@ -1869,6 +1992,14 @@ public class MainViewModel extends AndroidViewModel {
     public void exportVideoForQueueItem(QueueItem item, boolean burnSubtitles, String fontName,
                                         boolean forceMp4SoftSubtitles, File outputDir,
                                         SubtitleGenerator.VideoExportCallback callback) {
+        exportVideoForQueueItem(item, burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir,
+                SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void exportVideoForQueueItem(QueueItem item, boolean burnSubtitles, String fontName,
+                                        boolean forceMp4SoftSubtitles, File outputDir,
+                                        SubtitleGenerator.SubtitleLayerMode layerMode,
+                                        SubtitleGenerator.VideoExportCallback callback) {
         Uri videoUri = item.getVideoUri();
         List<SubtitleGenerator.SubtitleEntry> entries = item.getSubtitles();
         if (videoUri == null || entries == null || entries.isEmpty()) {
@@ -1880,7 +2011,7 @@ public class MainViewModel extends AndroidViewModel {
             SubtitleGenerator.ShortsSubtitleStyle shortsStyle = getShortsSubtitleStyle(item);
             VoskModelInfo modelInfo = selectedModelInfo.getValue();
             runWhenTaskServiceReady(true, () -> taskService.exportVideoForQueueItem(item, burnSubtitles, fontName,
-                    shortsStyle, forceMp4SoftSubtitles, outputDir, modelInfo, callback));
+                    shortsStyle, forceMp4SoftSubtitles, outputDir, modelInfo, layerMode, callback));
             return;
         }
 
@@ -1891,12 +2022,12 @@ public class MainViewModel extends AndroidViewModel {
 
         SubtitleGenerator.ShortsSubtitleStyle shortsStyle = getShortsSubtitleStyle(item);
         subtitleGenerator.exportVideoWithSubtitles(videoUri, entries, burnSubtitles, fontName, shortsStyle,
-                forceMp4SoftSubtitles, outputDir, new SubtitleGenerator.VideoExportCallback() {
+                forceMp4SoftSubtitles, outputDir, layerMode, new SubtitleGenerator.VideoExportCallback() {
             @Override
             public void onVideoExported(String filePath) {
                 handler.post(() -> {
                     registerExport(filePath, ExportRecord.TYPE_VIDEO, videoUri, item.getDisplayName(),
-                            burnSubtitles ? "hard-subtitles" : "soft-subtitles",
+                            (burnSubtitles ? "hard-" : "soft-") + layerMode.name().toLowerCase(Locale.US) + "-subtitles",
                             filePath.toLowerCase(Locale.getDefault()).endsWith(".mkv") ? "mkv" : "mp4");
                     if (burnSubtitles) {
                         item.setHardVideoPath(filePath);

@@ -9,7 +9,8 @@ public class QueueItem {
         COMPLETED,
         FAILED,
         CANCELLED,
-        EXPORTING
+        EXPORTING,
+        TRANSLATING
     }
 
     private long id;
@@ -25,6 +26,9 @@ public class QueueItem {
     private String message = "";
     private String previewText = "";
     private java.util.List<SubtitleGenerator.SubtitleEntry> subtitles = new java.util.ArrayList<>();
+    private String translationSourceLanguage = "";
+    private String translationTargetLanguage = "";
+    private String translationStatus = "";
     private boolean shortsVideo;
     private float shortsCaptionX = 0.5f;
     private float shortsCaptionY = 0.5f;
@@ -148,6 +152,40 @@ public class QueueItem {
 
     public void setSubtitles(java.util.List<SubtitleGenerator.SubtitleEntry> subtitles) {
         this.subtitles = subtitles == null ? new java.util.ArrayList<>() : subtitles;
+    }
+
+    public boolean hasTranslations() {
+        if (subtitles == null) return false;
+        for (SubtitleGenerator.SubtitleEntry entry : subtitles) {
+            if (entry != null && entry.hasTranslation()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public String getTranslationSourceLanguage() {
+        return translationSourceLanguage;
+    }
+
+    public void setTranslationSourceLanguage(String translationSourceLanguage) {
+        this.translationSourceLanguage = translationSourceLanguage == null ? "" : translationSourceLanguage;
+    }
+
+    public String getTranslationTargetLanguage() {
+        return translationTargetLanguage;
+    }
+
+    public void setTranslationTargetLanguage(String translationTargetLanguage) {
+        this.translationTargetLanguage = translationTargetLanguage == null ? "" : translationTargetLanguage;
+    }
+
+    public String getTranslationStatus() {
+        return translationStatus;
+    }
+
+    public void setTranslationStatus(String translationStatus) {
+        this.translationStatus = translationStatus == null ? "" : translationStatus;
     }
 
     public boolean isShortsVideo() {

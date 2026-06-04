@@ -100,6 +100,10 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
     private enum PermissionOperation { EXPORT, NONE }
     private PermissionOperation pendingOperation = PermissionOperation.NONE;
 
+    private interface SubtitleLayerChoiceCallback {
+        void onChosen(SubtitleGenerator.SubtitleLayerMode layerMode);
+    }
+
     private final Runnable updateHighlightRunnable = new Runnable() {
         @Override
         public void run() {
@@ -107,6 +111,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                 long position = player.getCurrentPosition();
                 updateHighlightedSubtitle(position);
                 updateShortsCaption(position);
+                updateNormalSubtitleOverlay(position);
                 handler.postDelayed(this, UPDATE_INTERVAL);
             }
         }
@@ -179,6 +184,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
             public void onPositionDiscontinuity(Player.PositionInfo oldPosition, Player.PositionInfo newPosition, int reason) {
                 updateHighlightedSubtitle(newPosition.positionMs);
                 updateShortsCaption(newPosition.positionMs);
+                updateNormalSubtitleOverlay(newPosition.positionMs);
             }
         });
     }
@@ -251,6 +257,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
             if (entries != null) {
                 updateHighlightedSubtitle(player.getCurrentPosition());
                 updateShortsCaption(player.getCurrentPosition());
+                updateNormalSubtitleOverlay(player.getCurrentPosition());
             }
         });
 
@@ -262,6 +269,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
             binding.shortsOverlay.post(() -> {
                 applyShortsCaptionPosition();
                 updateShortsCaption(player.getCurrentPosition());
+                updateNormalSubtitleOverlay(player.getCurrentPosition());
             });
         });
 
@@ -404,11 +412,18 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
         List<SubtitleGenerator.SubtitleEntry> entries = viewModel.getSubtitleEntries().getValue();
         if (shortsMode == null || !shortsMode || entries == null || binding.playerFrame.getVisibility() != View.VISIBLE) {
             binding.shortsOverlay.setVisibility(View.GONE);
+            binding.shortsTranslationTV.setVisibility(View.GONE);
             return;
         }
 
         String activeText = "";
+        String activeTranslation = "";
         for (SubtitleGenerator.SubtitleEntry entry : entries) {
+            long entryStart = parseTime(entry.getStartTime());
+            long entryEnd = parseTime(entry.getEndTime());
+            if (positionMs >= entryStart && positionMs < entryEnd && entry.hasTranslation()) {
+                activeTranslation = entry.getTranslationText();
+            }
             for (WordTiming word : entry.getWords()) {
                 if (positionMs >= word.getStartMs() && positionMs <= word.getEndMs()) {
                     activeText = word.getWord();
@@ -419,12 +434,40 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
         }
 
         binding.shortsOverlay.setVisibility(activeText.isEmpty() ? View.GONE : View.VISIBLE);
+        binding.shortsTranslationTV.setVisibility(activeTranslation.isEmpty() || activeText.isEmpty() ? View.GONE : View.VISIBLE);
         Boolean isUppercase = viewModel.getShortsUppercase().getValue();
         if (isUppercase != null && isUppercase) {
             activeText = activeText.toUpperCase(Locale.getDefault());
         }
         binding.shortsWordTV.setText(activeText);
+        binding.shortsTranslationTV.setText(activeTranslation);
         binding.shortsWordTV.post(this::applyShortsCaptionPosition);
+    }
+
+    private void updateNormalSubtitleOverlay(long positionMs) {
+        Boolean shortsMode = viewModel.getShortsPreviewMode().getValue();
+        List<SubtitleGenerator.SubtitleEntry> entries = viewModel.getSubtitleEntries().getValue();
+        if (Boolean.TRUE.equals(shortsMode) || entries == null || binding.playerFrame.getVisibility() != View.VISIBLE) {
+            binding.normalSubtitleOverlay.setVisibility(View.GONE);
+            return;
+        }
+        SubtitleGenerator.SubtitleEntry activeEntry = null;
+        for (SubtitleGenerator.SubtitleEntry entry : entries) {
+            long startTime = parseTime(entry.getStartTime());
+            long endTime = parseTime(entry.getEndTime());
+            if (positionMs >= startTime && positionMs < endTime) {
+                activeEntry = entry;
+                break;
+            }
+        }
+        if (activeEntry == null || activeEntry.getText() == null || activeEntry.getText().trim().isEmpty()) {
+            binding.normalSubtitleOverlay.setVisibility(View.GONE);
+            return;
+        }
+        binding.normalOriginalSubtitleTV.setText(activeEntry.getText());
+        binding.normalTranslationSubtitleTV.setText(activeEntry.getTranslationText());
+        binding.normalTranslationSubtitleTV.setVisibility(activeEntry.hasTranslation() ? View.VISIBLE : View.GONE);
+        binding.normalSubtitleOverlay.setVisibility(View.VISIBLE);
     }
 
     private void applyShortsCaptionScale() {
@@ -710,6 +753,27 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
     }
 
     private void showEditSubtitleDialog(int position, SubtitleGenerator.SubtitleEntry entry) {
+        if (entry.hasTranslation()) {
+            android.widget.LinearLayout layout = new android.widget.LinearLayout(requireContext());
+            layout.setOrientation(android.widget.LinearLayout.VERTICAL);
+            final EditText originalInput = new EditText(requireContext());
+            originalInput.setHint("Original");
+            originalInput.setText(entry.getText());
+            final EditText translationInput = new EditText(requireContext());
+            translationInput.setHint("Translation");
+            translationInput.setText(entry.getTranslationText());
+            layout.addView(originalInput);
+            layout.addView(translationInput);
+            new MaterialAlertDialogBuilder(requireContext())
+                    .setTitle("Edit Subtitle")
+                    .setView(layout)
+                    .setPositiveButton("Save", (dialog, which) -> {
+                        viewModel.updateSubtitle(position, originalInput.getText().toString(), translationInput.getText().toString());
+                    })
+                    .setNegativeButton("Cancel", (dialog, which) -> dialog.cancel())
+                    .show();
+            return;
+        }
         final EditText input = new EditText(requireContext());
         input.setText(entry.getText());
         new MaterialAlertDialogBuilder(requireContext())
@@ -829,24 +893,25 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                     } else {
                         boolean hardSubtitles = which == 3;
                         if (!hardSubtitles && shouldAskSoftSubtitleContainer()) {
-                            choosePositionedSoftExportFormat();
+                            chooseSubtitleLayerMode(this::choosePositionedSoftExportFormat);
                         } else {
-                            startExport(hardSubtitles, hardSubtitles ? "RobotoRegular" : null, false);
+                            chooseSubtitleLayerMode(layerMode ->
+                                    startExport(hardSubtitles, hardSubtitles ? "RobotoRegular" : null, false, layerMode));
                         }
                     }
                 });
     }
 
     private void saveSubtitlesInFormat(String format) {
-        ExportFolderDialog.show(this, "Save to folder", outputDir -> {
-            executeSaveSubtitles(format, outputDir);
-        });
+        chooseSubtitleLayerMode(layerMode ->
+                ExportFolderDialog.show(this, "Save to folder", outputDir ->
+                        executeSaveSubtitles(format, outputDir, layerMode)));
     }
 
-    private void executeSaveSubtitles(String format, File outputDir) {
+    private void executeSaveSubtitles(String format, File outputDir, SubtitleGenerator.SubtitleLayerMode layerMode) {
         binding.progressBar.setVisibility(View.VISIBLE);
         setStatusMessage("Saving subtitles in " + format.toUpperCase() + " format...");
-        viewModel.saveSubtitlesInFormat(format, outputDir, new SubtitleGenerator.SubtitleSaveCallback() {
+        viewModel.saveSubtitlesInFormat(format, outputDir, layerMode, new SubtitleGenerator.SubtitleSaveCallback() {
             @Override
             public void onSubtitlesSaved(String filePath) {
                 if (!isAdded()) return;
@@ -867,7 +932,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                         if (targetFile.exists()) {
                             targetFile.delete();
                         }
-                        executeSaveSubtitles(format, outputDir);
+                        executeSaveSubtitles(format, outputDir, layerMode);
                     }, () -> {
                         String prefix = "Already exported subtitles for this video and model: ";
                         String filename = errorMessage.substring(prefix.length());
@@ -894,7 +959,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
         return item != null && item.isSubtitleCaptionPositionAdjusted();
     }
 
-    private void choosePositionedSoftExportFormat() {
+    private void choosePositionedSoftExportFormat(SubtitleGenerator.SubtitleLayerMode layerMode) {
         AppOptionDialog.show(requireContext(),
                 "Soft subtitle format",
                 "Adjusted subtitle positions need a container that can preserve styling.",
@@ -905,20 +970,22 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                         new AppOptionDialog.Option(
                                 "MP4 with standard subtitles",
                                 "Best compatibility, but subtitle placement may be controlled by the player.")
-                }, which -> startExport(false, null, which == 1));
+                }, which -> startExport(false, null, which == 1, layerMode));
     }
 
-    private void startExport(boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles) {
+    private void startExport(boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles,
+                             SubtitleGenerator.SubtitleLayerMode layerMode) {
         ExportFolderDialog.show(this, "Export to folder", outputDir -> {
-            executeVideoExport(burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir);
+            executeVideoExport(burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir, layerMode);
         });
     }
 
-    private void executeVideoExport(boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles, File outputDir) {
+    private void executeVideoExport(boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles,
+                                    File outputDir, SubtitleGenerator.SubtitleLayerMode layerMode) {
         binding.progressBar.setVisibility(View.VISIBLE);
         binding.progressBar.setIndeterminate(true);
         setStatusMessage("Exporting video with " + (burnSubtitles ? "hard" : "soft") + " subtitles...");
-        viewModel.exportVideoWithSubtitles(burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir,
+        viewModel.exportVideoWithSubtitles(burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir, layerMode,
                 new SubtitleGenerator.VideoExportCallback() {
             @Override
             public void onVideoExported(String filePath) {
@@ -940,7 +1007,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                         if (targetFile.exists()) {
                             targetFile.delete();
                         }
-                        executeVideoExport(burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir);
+                        executeVideoExport(burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir, layerMode);
                     }, () -> {
                         String prefix = "Already exported this video with this model: ";
                         String filename = errorMessage.substring(prefix.length());
@@ -968,6 +1035,30 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                 }
             }
         });
+    }
+
+    private void chooseSubtitleLayerMode(SubtitleLayerChoiceCallback callback) {
+        List<SubtitleGenerator.SubtitleEntry> entries = viewModel.getSubtitleEntries().getValue();
+        if (!SubtitleGenerator.hasTranslatedSubtitles(entries)) {
+            callback.onChosen(SubtitleGenerator.SubtitleLayerMode.ORIGINAL);
+            return;
+        }
+        AppOptionDialog.show(requireContext(),
+                "Subtitle language",
+                "Choose which subtitle text to export.",
+                new AppOptionDialog.Option[]{
+                        new AppOptionDialog.Option("Original", "Export the source subtitles."),
+                        new AppOptionDialog.Option("Translation", "Export the translated subtitles."),
+                        new AppOptionDialog.Option("Double", "Export original first, translation second.")
+                }, which -> {
+                    if (which == 1) {
+                        callback.onChosen(SubtitleGenerator.SubtitleLayerMode.TRANSLATION);
+                    } else if (which == 2) {
+                        callback.onChosen(SubtitleGenerator.SubtitleLayerMode.DOUBLE);
+                    } else {
+                        callback.onChosen(SubtitleGenerator.SubtitleLayerMode.ORIGINAL);
+                    }
+                });
     }
 
     private void showAlreadyExistsDialog(String errorMessage, boolean isVideo,

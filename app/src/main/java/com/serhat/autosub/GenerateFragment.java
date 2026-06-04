@@ -38,6 +38,10 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
     private QueueAdapter queueAdapter;
     private ActionMode actionMode;
 
+    private interface SubtitleLayerChoiceCallback {
+        void onChosen(SubtitleGenerator.SubtitleLayerMode layerMode);
+    }
+
     private final ActivityResultLauncher<String[]> pickMultipleMedia =
             registerForActivityResult(new ActivityResultContracts.OpenMultipleDocuments(), uris -> {
                 if (uris != null && !uris.isEmpty()) {
@@ -105,6 +109,11 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
             @Override
             public void onPreview(QueueItem item) {
                 viewModel.openQueueItemPreview(item);
+            }
+
+            @Override
+            public void onTranslate(QueueItem item) {
+                translateQueueItem(item);
             }
 
             @Override
@@ -206,18 +215,63 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                     boolean burnSubtitles = (which == 1);
                     String fontName = burnSubtitles ? "RobotoRegular" : null;
                     if (!burnSubtitles && shouldAskSoftSubtitleContainer(item)) {
-                        chooseQueueSoftExportFormat(item);
+                        chooseSubtitleLayerMode(item, layerMode -> chooseQueueSoftExportFormat(item, layerMode));
                     } else {
-                        exportQueueVideo(item, burnSubtitles, fontName, false);
+                        chooseSubtitleLayerMode(item, layerMode ->
+                                exportQueueVideo(item, burnSubtitles, fontName, false, layerMode));
                     }
                 });
+    }
+
+    private void translateQueueItem(QueueItem item) {
+        if (item == null) return;
+        if (item.hasTranslations()) {
+            AppOptionDialog.show(requireContext(),
+                    "Retranslate subtitles",
+                    "This item already has translated subtitles. Use current translation settings and replace them?",
+                    new AppOptionDialog.Option[]{
+                            new AppOptionDialog.Option(
+                                    "Retranslate",
+                                    "Replace the existing translated text using current Settings."),
+                            new AppOptionDialog.Option(
+                                    "Cancel",
+                                    "Keep the current translation unchanged.")
+                    }, which -> {
+                        if (which == 0) {
+                            executeTranslateQueueItem(item);
+                        }
+                    });
+        } else {
+            executeTranslateQueueItem(item);
+        }
+    }
+
+    private void executeTranslateQueueItem(QueueItem item) {
+        viewModel.translateQueueItem(item, new SubtitleGenerator.TranslationCallback() {
+            @Override
+            public void onTranslated(List<SubtitleGenerator.SubtitleEntry> subtitleEntries, String sourceLanguage, String targetLanguage) {
+                if (!isAdded()) return;
+                Toast.makeText(requireContext(), "Subtitles translated", Toast.LENGTH_SHORT).show();
+            }
+
+            @Override
+            public void onError(String errorMessage) {
+                if (!isAdded()) return;
+                Toast.makeText(requireContext(), "Translation failed: " + errorMessage, Toast.LENGTH_LONG).show();
+            }
+
+            @Override
+            public void onProgressUpdate(int progress) {
+                // Progress is shown on the queue item card.
+            }
+        });
     }
 
     private boolean shouldAskSoftSubtitleContainer(QueueItem item) {
         return item != null && (item.isShortsVideo() || item.isSubtitleCaptionPositionAdjusted());
     }
 
-    private void chooseQueueSoftExportFormat(QueueItem item) {
+    private void chooseQueueSoftExportFormat(QueueItem item, SubtitleGenerator.SubtitleLayerMode layerMode) {
         AppOptionDialog.show(requireContext(),
                 "Soft subtitle format",
                 "Adjusted subtitle positions need a container that can preserve styling.",
@@ -228,17 +282,19 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                         new AppOptionDialog.Option(
                                 "MP4 with standard subtitles",
                                 "Best compatibility, but subtitle placement may be controlled by the player.")
-                }, which -> exportQueueVideo(item, false, null, which == 1));
+                }, which -> exportQueueVideo(item, false, null, which == 1, layerMode));
     }
 
-    private void exportQueueVideo(QueueItem item, boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles) {
+    private void exportQueueVideo(QueueItem item, boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles,
+                                  SubtitleGenerator.SubtitleLayerMode layerMode) {
         ExportFolderDialog.show(this, "Export to folder", outputDir ->
-                executeVideoExport(item, burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir));
+                executeVideoExport(item, burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir, layerMode));
     }
 
-    private void executeVideoExport(QueueItem item, boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles, File outputDir) {
+    private void executeVideoExport(QueueItem item, boolean burnSubtitles, String fontName, boolean forceMp4SoftSubtitles,
+                                    File outputDir, SubtitleGenerator.SubtitleLayerMode layerMode) {
         viewModel.exportVideoForQueueItem(item, burnSubtitles, fontName, forceMp4SoftSubtitles,
-                outputDir, new SubtitleGenerator.VideoExportCallback() {
+                outputDir, layerMode, new SubtitleGenerator.VideoExportCallback() {
             @Override
             public void onVideoExported(String filePath) {
                 if (!isAdded()) return;
@@ -256,7 +312,7 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                         if (targetFile.exists()) {
                             targetFile.delete();
                         }
-                        executeVideoExport(item, burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir);
+                        executeVideoExport(item, burnSubtitles, fontName, forceMp4SoftSubtitles, outputDir, layerMode);
                     }, () -> {
                         String prefix = "Already exported this video with this model: ";
                         String filename = errorMessage.substring(prefix.length());
@@ -293,13 +349,15 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                                 "Web-friendly subtitle format for browsers and HTML video workflows.")
                 }, which -> {
                     String format = (which == 0 ? "srt" : "vtt");
-                    ExportFolderDialog.show(this, "Save to folder", outputDir ->
-                            executeSaveSubtitles(item, format, outputDir));
+                    chooseSubtitleLayerMode(item, layerMode ->
+                            ExportFolderDialog.show(this, "Save to folder", outputDir ->
+                                    executeSaveSubtitles(item, format, outputDir, layerMode)));
                 });
     }
 
-    private void executeSaveSubtitles(QueueItem item, String format, File outputDir) {
-        viewModel.saveSubtitlesForQueueItem(item, format, outputDir, new SubtitleGenerator.SubtitleSaveCallback() {
+    private void executeSaveSubtitles(QueueItem item, String format, File outputDir,
+                                      SubtitleGenerator.SubtitleLayerMode layerMode) {
+        viewModel.saveSubtitlesForQueueItem(item, format, outputDir, layerMode, new SubtitleGenerator.SubtitleSaveCallback() {
             @Override
             public void onSubtitlesSaved(String filePath) {
                 if (!isAdded()) return;
@@ -317,7 +375,7 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                         if (targetFile.exists()) {
                             targetFile.delete();
                         }
-                        executeSaveSubtitles(item, format, outputDir);
+                        executeSaveSubtitles(item, format, outputDir, layerMode);
                     }, () -> {
                         String prefix = "Already exported subtitles for this video and model: ";
                         String filename = errorMessage.substring(prefix.length());
@@ -334,6 +392,29 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                 }
             }
         });
+    }
+
+    private void chooseSubtitleLayerMode(QueueItem item, SubtitleLayerChoiceCallback callback) {
+        if (item == null || !item.hasTranslations()) {
+            callback.onChosen(SubtitleGenerator.SubtitleLayerMode.ORIGINAL);
+            return;
+        }
+        AppOptionDialog.show(requireContext(),
+                "Subtitle language",
+                "Choose which subtitle text to export.",
+                new AppOptionDialog.Option[]{
+                        new AppOptionDialog.Option("Original", "Export the source subtitles."),
+                        new AppOptionDialog.Option("Translation", "Export the translated subtitles."),
+                        new AppOptionDialog.Option("Double", "Export original first, translation second.")
+                }, which -> {
+                    if (which == 1) {
+                        callback.onChosen(SubtitleGenerator.SubtitleLayerMode.TRANSLATION);
+                    } else if (which == 2) {
+                        callback.onChosen(SubtitleGenerator.SubtitleLayerMode.DOUBLE);
+                    } else {
+                        callback.onChosen(SubtitleGenerator.SubtitleLayerMode.ORIGINAL);
+                    }
+                });
     }
 
     private void showAlreadyExistsDialog(String errorMessage, boolean isVideo,

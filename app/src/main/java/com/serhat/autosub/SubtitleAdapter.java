@@ -190,7 +190,7 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
     }
 
     class SubtitleViewHolder extends RecyclerView.ViewHolder {
-        TextView numberTV, timeTV, textTV;
+        TextView numberTV, timeTV, textTV, translationTV;
         ImageButton playBT, editBT, deleteBT;
 
         SubtitleViewHolder(@NonNull View itemView) {
@@ -198,6 +198,7 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
             numberTV = itemView.findViewById(R.id.numberTV);
             timeTV = itemView.findViewById(R.id.timeTV);
             textTV = itemView.findViewById(R.id.textTV);
+            translationTV = itemView.findViewById(R.id.translationTV);
             playBT = itemView.findViewById(R.id.playBT);
             editBT = itemView.findViewById(R.id.editBT);
             deleteBT = itemView.findViewById(R.id.deleteBT);
@@ -252,6 +253,8 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
             numberTV.setText(String.valueOf(entry.getNumber()));
             timeTV.setText(String.format("%s --> %s", entry.getStartTime(), entry.getEndTime()));
             textTV.setText(entry.getText());
+            translationTV.setText(entry.getTranslationText());
+            translationTV.setVisibility(entry.hasTranslation() ? View.VISIBLE : View.GONE);
             
             if (isSelectionMode) {
                 itemView.setBackgroundColor(isSelected ?
@@ -328,6 +331,7 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
         private final String startTime;
         private final String endTime;
         private final String text;
+        private final String translationText;
         private final boolean highlighted;
         private final boolean selected;
 
@@ -336,6 +340,7 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
             startTime = entry.getStartTime();
             endTime = entry.getEndTime();
             text = entry.getText();
+            translationText = entry.getTranslationText();
             this.highlighted = highlighted;
             this.selected = selected;
         }
@@ -350,12 +355,13 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
                     && selected == other.selected
                     && Objects.equals(startTime, other.startTime)
                     && Objects.equals(endTime, other.endTime)
-                    && Objects.equals(text, other.text);
+                    && Objects.equals(text, other.text)
+                    && Objects.equals(translationText, other.translationText);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(number, startTime, endTime, text, highlighted, selected);
+            return Objects.hash(number, startTime, endTime, text, translationText, highlighted, selected);
         }
     }
 }

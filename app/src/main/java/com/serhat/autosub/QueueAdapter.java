@@ -34,6 +34,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         void onShare(QueueItem item);
         void onPlay(QueueItem item);
         void onPreview(QueueItem item);
+        void onTranslate(QueueItem item);
         default void onSelectionChanged() {}
         default void onLongPress(QueueItem item) {}
     }
@@ -149,7 +150,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         LinearProgressIndicator progressIndicator;
         MaterialButton retryBT, removeBT, exportVideoBT, exportSubtitleBT, shareBT, playBT;
         android.widget.ImageView queueThumbIV;
-        android.widget.ImageButton queueEditBT;
+        android.widget.ImageButton queueEditBT, queueTranslateBT;
         android.widget.CheckBox queueSelectCB;
         private String boundThumbnailPath;
 
@@ -167,13 +168,15 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             playBT = itemView.findViewById(R.id.queuePlayBT);
             queueThumbIV = itemView.findViewById(R.id.queueThumbIV);
             queueEditBT = itemView.findViewById(R.id.queueEditBT);
+            queueTranslateBT = itemView.findViewById(R.id.queueTranslateBT);
             queueSelectCB = itemView.findViewById(R.id.queueSelectCB);
         }
 
         void bind(QueueItem item) {
             titleTV.setText(item.getDisplayName());
             statusTV.setText(item.getStatus().name().toLowerCase(Locale.getDefault()) + statusSuffix(item));
-            if (item.getStatus() == QueueItem.Status.EXPORTING) {
+            if (item.getStatus() == QueueItem.Status.EXPORTING
+                    || item.getStatus() == QueueItem.Status.TRANSLATING) {
                 outputTV.setText(item.getMessage());
             } else {
                 outputTV.setText(item.getOutputPath().isEmpty() ? item.getMessage() : item.getOutputPath());
@@ -183,7 +186,9 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             }
             outputTV.setVisibility(outputTV.getText().length() == 0 ? View.GONE : View.VISIBLE);
 
-            boolean active = item.getStatus() == QueueItem.Status.PROCESSING || item.getStatus() == QueueItem.Status.EXPORTING;
+            boolean active = item.getStatus() == QueueItem.Status.PROCESSING
+                    || item.getStatus() == QueueItem.Status.EXPORTING
+                    || item.getStatus() == QueueItem.Status.TRANSLATING;
             progressIndicator.setVisibility(active ? View.VISIBLE : View.GONE);
             if (active && item.getProgress() < 0) {
                 progressIndicator.setIndeterminate(true);
@@ -234,6 +239,12 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             
             // Edit button and item card click
             queueEditBT.setVisibility(selectionMode ? View.GONE : View.VISIBLE);
+            queueTranslateBT.setVisibility(completed && !selectionMode && !item.getSubtitles().isEmpty()
+                    ? View.VISIBLE : View.GONE);
+            queueTranslateBT.setAlpha(item.hasTranslations() ? 0.78f : 1f);
+            queueTranslateBT.setOnClickListener(v -> {
+                if (listener != null) listener.onTranslate(item);
+            });
             queueEditBT.setOnClickListener(v -> {
                 if (listener != null) listener.onPreview(item);
             });
@@ -255,12 +266,15 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         }
 
         private String statusSuffix(QueueItem item) {
-            if (item.getStatus() == QueueItem.Status.PROCESSING || item.getStatus() == QueueItem.Status.EXPORTING) {
+            if (item.getStatus() == QueueItem.Status.PROCESSING
+                    || item.getStatus() == QueueItem.Status.EXPORTING
+                    || item.getStatus() == QueueItem.Status.TRANSLATING) {
                 if (item.getProgress() < 0) {
                     String message = item.getMessage();
                     if (message != null && !message.trim().isEmpty()) {
                         return " - " + message.trim();
                     }
+                    if (item.getStatus() == QueueItem.Status.TRANSLATING) return " - translating";
                     return item.getStatus() == QueueItem.Status.EXPORTING ? " - exporting video" : "";
                 }
                 return " - " + item.getProgress() + "%";
@@ -293,6 +307,10 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         private final String softVideoPath;
         private final String hardVideoPath;
         private final String thumbnailPath;
+        private final String translationSourceLanguage;
+        private final String translationTargetLanguage;
+        private final String translationStatus;
+        private final boolean hasTranslations;
         private final boolean selected;
 
         private QueueRowState(QueueItem item) {
@@ -306,6 +324,10 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             softVideoPath = item.getSoftVideoPath();
             hardVideoPath = item.getHardVideoPath();
             thumbnailPath = item.getThumbnailPath();
+            translationSourceLanguage = item.getTranslationSourceLanguage();
+            translationTargetLanguage = item.getTranslationTargetLanguage();
+            translationStatus = item.getTranslationStatus();
+            hasTranslations = item.hasTranslations();
             selected = item.isSelected();
         }
 
@@ -328,13 +350,18 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
                     && Objects.equals(previewText, other.previewText)
                     && Objects.equals(softVideoPath, other.softVideoPath)
                     && Objects.equals(hardVideoPath, other.hardVideoPath)
-                    && Objects.equals(thumbnailPath, other.thumbnailPath);
+                    && Objects.equals(thumbnailPath, other.thumbnailPath)
+                    && Objects.equals(translationSourceLanguage, other.translationSourceLanguage)
+                    && Objects.equals(translationTargetLanguage, other.translationTargetLanguage)
+                    && Objects.equals(translationStatus, other.translationStatus)
+                    && hasTranslations == other.hasTranslations;
         }
 
         @Override
         public int hashCode() {
             return Objects.hash(id, displayName, status, progress, outputPath, message, previewText,
-                    softVideoPath, hardVideoPath, thumbnailPath, selected);
+                    softVideoPath, hardVideoPath, thumbnailPath, translationSourceLanguage,
+                    translationTargetLanguage, translationStatus, hasTranslations, selected);
         }
     }
 }

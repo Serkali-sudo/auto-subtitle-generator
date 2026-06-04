@@ -71,4 +71,14 @@
         android:lineSpacingExtra="2dp"
         android:textSize="16sp" />
 
+    <TextView
+        android:id="@+id/translationTV"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:lineSpacingExtra="2dp"
+        android:textColor="#B8860B"
+        android:textSize="15sp"
+        android:visibility="gone" />
+
 </LinearLayout>

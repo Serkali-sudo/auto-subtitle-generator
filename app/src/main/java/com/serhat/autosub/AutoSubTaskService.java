@@ -444,18 +444,26 @@ public class AutoSubTaskService extends Service {
     public void savePreviewSubtitles(List<SubtitleGenerator.SubtitleEntry> entries, String format, Uri videoUri,
                                      File outputDir, VoskModelInfo modelInfo,
                                      SubtitleGenerator.SubtitleSaveCallback callback) {
+        savePreviewSubtitles(entries, format, videoUri, outputDir, modelInfo,
+                SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void savePreviewSubtitles(List<SubtitleGenerator.SubtitleEntry> entries, String format, Uri videoUri,
+                                     File outputDir, VoskModelInfo modelInfo,
+                                     SubtitleGenerator.SubtitleLayerMode layerMode,
+                                     SubtitleGenerator.SubtitleSaveCallback callback) {
         if (videoUri == null || entries == null || entries.isEmpty()) {
             callback.onError("No video or subtitles available to save");
             return;
         }
         beginForeground(AutoSubTaskState.TaskType.SUBTITLE_SAVE,
                 "Saving Subtitles", format.toUpperCase(Locale.getDefault()), -1);
-        subtitleGenerator.saveSubtitlesToFile(entries, format, videoUri, outputDir, new SubtitleGenerator.SubtitleSaveCallback() {
+        subtitleGenerator.saveSubtitlesToFile(entries, format, videoUri, outputDir, layerMode, new SubtitleGenerator.SubtitleSaveCallback() {
             @Override
             public void onSubtitlesSaved(String filePath) {
                 handler.post(() -> {
                     registerExport(filePath, ExportRecord.TYPE_SUBTITLE, videoUri, getDisplayNameHelper(videoUri),
-                            format.toLowerCase(Locale.getDefault()) + "-subtitles", format, modelInfo);
+                            format.toLowerCase(Locale.getDefault()) + "-" + layerMode.name().toLowerCase(Locale.US) + "-subtitles", format, modelInfo);
                     publishIdleStateIfNoWork();
                     callback.onSubtitlesSaved(filePath);
                 });
@@ -475,6 +483,15 @@ public class AutoSubTaskService extends Service {
                                    String fontName, SubtitleGenerator.ShortsSubtitleStyle shortsStyle,
                                    boolean forceMp4SoftSubtitles, File outputDir, VoskModelInfo modelInfo,
                                    SubtitleGenerator.VideoExportCallback callback) {
+        exportPreviewVideo(videoUri, entries, burnSubtitles, fontName, shortsStyle, forceMp4SoftSubtitles,
+                outputDir, modelInfo, SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void exportPreviewVideo(Uri videoUri, List<SubtitleGenerator.SubtitleEntry> entries, boolean burnSubtitles,
+                                   String fontName, SubtitleGenerator.ShortsSubtitleStyle shortsStyle,
+                                   boolean forceMp4SoftSubtitles, File outputDir, VoskModelInfo modelInfo,
+                                   SubtitleGenerator.SubtitleLayerMode layerMode,
+                                   SubtitleGenerator.VideoExportCallback callback) {
         if (videoUri == null || entries == null || entries.isEmpty()) {
             callback.onError("No video or subtitles available to export");
             return;
@@ -482,12 +499,12 @@ public class AutoSubTaskService extends Service {
         beginForeground(AutoSubTaskState.TaskType.VIDEO_EXPORT,
                 "Exporting Video", burnSubtitles ? "Hard subtitles" : "Soft subtitles", -1);
         subtitleGenerator.exportVideoWithSubtitles(videoUri, entries, burnSubtitles, fontName, shortsStyle,
-                forceMp4SoftSubtitles, outputDir, new SubtitleGenerator.VideoExportCallback() {
+                forceMp4SoftSubtitles, outputDir, layerMode, new SubtitleGenerator.VideoExportCallback() {
                     @Override
                     public void onVideoExported(String filePath) {
                         handler.post(() -> {
                             registerExport(filePath, ExportRecord.TYPE_VIDEO, videoUri, getDisplayNameHelper(videoUri),
-                                    burnSubtitles ? "hard-subtitles" : "soft-subtitles",
+                                    (burnSubtitles ? "hard-" : "soft-") + layerMode.name().toLowerCase(Locale.US) + "-subtitles",
                                     filePath.toLowerCase(Locale.getDefault()).endsWith(".mkv") ? "mkv" : "mp4", modelInfo);
                             showSuccessNotificationIfEnabled(3001, "Video Export Complete", "Video exported successfully.");
                             publishIdleStateIfNoWork();
@@ -518,18 +535,34 @@ public class AutoSubTaskService extends Service {
 
     public void saveSubtitlesForQueueItem(QueueItem item, String format, File outputDir, VoskModelInfo modelInfo,
                                           SubtitleGenerator.SubtitleSaveCallback callback) {
+        saveSubtitlesForQueueItem(item, format, outputDir, modelInfo,
+                SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void saveSubtitlesForQueueItem(QueueItem item, String format, File outputDir, VoskModelInfo modelInfo,
+                                          SubtitleGenerator.SubtitleLayerMode layerMode,
+                                          SubtitleGenerator.SubtitleSaveCallback callback) {
         if (item == null || item.getVideoUri() == null || item.getSubtitles().isEmpty()) {
             callback.onError("No video or subtitles available to save");
             return;
         }
         beginForeground(AutoSubTaskState.TaskType.SUBTITLE_SAVE,
                 "Saving Subtitles: " + item.getDisplayName(), format.toUpperCase(Locale.getDefault()), -1);
-        saveSubtitlesForQueueItemInternal(item, format, outputDir, modelInfo, callback);
+        saveSubtitlesForQueueItemInternal(item, format, outputDir, modelInfo, layerMode, callback);
     }
 
     public void exportVideoForQueueItem(QueueItem item, boolean burnSubtitles, String fontName,
                                         SubtitleGenerator.ShortsSubtitleStyle shortsStyle,
                                         boolean forceMp4SoftSubtitles, File outputDir, VoskModelInfo modelInfo,
+                                        SubtitleGenerator.VideoExportCallback callback) {
+        exportVideoForQueueItem(item, burnSubtitles, fontName, shortsStyle, forceMp4SoftSubtitles,
+                outputDir, modelInfo, SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void exportVideoForQueueItem(QueueItem item, boolean burnSubtitles, String fontName,
+                                        SubtitleGenerator.ShortsSubtitleStyle shortsStyle,
+                                        boolean forceMp4SoftSubtitles, File outputDir, VoskModelInfo modelInfo,
+                                        SubtitleGenerator.SubtitleLayerMode layerMode,
                                         SubtitleGenerator.VideoExportCallback callback) {
         if (item == null || item.getVideoUri() == null || item.getSubtitles().isEmpty()) {
             callback.onError("No video or subtitles available to export");
@@ -538,7 +571,73 @@ public class AutoSubTaskService extends Service {
         beginForeground(AutoSubTaskState.TaskType.VIDEO_EXPORT,
                 "Exporting Video: " + item.getDisplayName(), "Starting...", -1);
         exportVideoForQueueItemInternal(item, burnSubtitles, fontName, shortsStyle,
-                forceMp4SoftSubtitles, outputDir, modelInfo, callback);
+                forceMp4SoftSubtitles, outputDir, modelInfo, layerMode, callback);
+    }
+
+    public void translateQueueItem(QueueItem item, String sourceLanguage, String targetLanguage,
+                                   SubtitleGenerator.TranslationCallback callback) {
+        if (item == null || item.getSubtitles().isEmpty()) {
+            callback.onError("No subtitles available to translate");
+            return;
+        }
+        item.setStatus(QueueItem.Status.TRANSLATING);
+        item.setProgress(-1);
+        item.setMessage("Translating subtitles...");
+        item.setTranslationStatus("translating");
+        queueStore.updateItem(item);
+        publishQueueItems();
+        beginForeground(AutoSubTaskState.TaskType.SUBTITLE_SAVE,
+                "Translating Subtitles: " + item.getDisplayName(), "Starting...", -1);
+
+        subtitleGenerator.setTranslationSettings(true, sourceLanguage, targetLanguage);
+        subtitleGenerator.translateExistingSubtitles(item.getSubtitles(), new SubtitleGenerator.TranslationCallback() {
+            @Override
+            public void onTranslated(List<SubtitleGenerator.SubtitleEntry> subtitleEntries, String resolvedSourceLanguage, String resolvedTargetLanguage) {
+                handler.post(() -> {
+                    item.setSubtitles(subtitleEntries);
+                    item.setTranslationSourceLanguage(resolvedSourceLanguage);
+                    item.setTranslationTargetLanguage(resolvedTargetLanguage);
+                    item.setTranslationStatus("translated");
+                    item.setPreviewText(getPreviewTextHelper(subtitleEntries));
+                    item.setStatus(QueueItem.Status.COMPLETED);
+                    item.setProgress(100);
+                    item.setMessage("Translated subtitles");
+                    queueStore.updateItem(item);
+                    publishQueueItems();
+                    publishIdleStateIfNoWork();
+                    callback.onTranslated(subtitleEntries, resolvedSourceLanguage, resolvedTargetLanguage);
+                });
+            }
+
+            @Override
+            public void onError(String errorMessage) {
+                handler.post(() -> {
+                    item.setStatus(QueueItem.Status.COMPLETED);
+                    item.setProgress(100);
+                    item.setTranslationStatus("failed");
+                    item.setMessage("Translation failed: " + errorMessage);
+                    queueStore.updateItem(item);
+                    publishQueueItems();
+                    publishIdleStateIfNoWork();
+                    callback.onError(errorMessage);
+                });
+            }
+
+            @Override
+            public void onProgressUpdate(int progress) {
+                handler.post(() -> {
+                    item.setProgress(progress);
+                    item.setMessage(progress < 0 ? "Translating subtitles..." : "Translating subtitles... " + progress + "%");
+                    queueStore.updateItem(item);
+                    publishQueueItems();
+                    publishState(new AutoSubTaskState(AutoSubTaskState.TaskType.SUBTITLE_SAVE,
+                            "Translating Subtitles: " + item.getDisplayName(), item.getMessage(),
+                            progress, item.getId(), activeDownloadModelId, activeDownloadSpeedText,
+                            activeDownloadEtaText, activeDownloadPaused, queueRunning, queuedDownloadIds()));
+                    callback.onProgressUpdate(progress);
+                });
+            }
+        });
     }
 
     public void batchSaveSubtitles(List<QueueItem> items, String format, File outputDir, VoskModelInfo modelInfo,
@@ -643,8 +742,12 @@ public class AutoSubTaskService extends Service {
                     return;
                 }
                 queueItem.setSubtitles(entries);
+                queueItem.setTranslationSourceLanguage(subtitleGenerator.getResolvedTranslationSourceLanguage());
+                queueItem.setTranslationTargetLanguage(subtitleGenerator.getTranslationTargetLanguage());
+                queueItem.setTranslationStatus(SubtitleGenerator.hasTranslatedSubtitles(entries) ? "translated" : "");
                 queueItem.setPreviewText(getPreviewTextHelper(entries));
                 saveSubtitlesForQueueItemInternal(queueItem, currentBatchFormat(), null, selectedModelInfo,
+                        SubtitleGenerator.SubtitleLayerMode.ORIGINAL,
                         new SubtitleGenerator.SubtitleSaveCallback() {
                             @Override
                             public void onSubtitlesSaved(String filePath) {
@@ -765,6 +868,7 @@ public class AutoSubTaskService extends Service {
     }
 
     private void saveSubtitlesForQueueItemInternal(QueueItem item, String format, File outputDir, VoskModelInfo modelInfo,
+                                                   SubtitleGenerator.SubtitleLayerMode layerMode,
                                                    SubtitleGenerator.SubtitleSaveCallback callback) {
         item.setStatus(QueueItem.Status.EXPORTING);
         item.setProgress(0);
@@ -772,15 +876,15 @@ public class AutoSubTaskService extends Service {
         queueStore.updateItem(item);
         publishQueueItems();
 
-        subtitleGenerator.saveSubtitlesToFile(item.getSubtitles(), format, item.getVideoUri(), outputDir, new SubtitleGenerator.SubtitleSaveCallback() {
+        subtitleGenerator.saveSubtitlesToFile(item.getSubtitles(), format, item.getVideoUri(), outputDir, layerMode, new SubtitleGenerator.SubtitleSaveCallback() {
             @Override
             public void onSubtitlesSaved(String filePath) {
                 handler.post(() -> {
                     registerExport(filePath, ExportRecord.TYPE_SUBTITLE, item.getVideoUri(), item.getDisplayName(),
-                            format.toLowerCase(Locale.getDefault()) + "-subtitles", format, modelInfo);
+                            format.toLowerCase(Locale.getDefault()) + "-" + layerMode.name().toLowerCase(Locale.US) + "-subtitles", format, modelInfo);
                     String f = format.toLowerCase(Locale.getDefault());
-                    if ("srt".equals(f)) item.setSrtPath(filePath);
-                    if ("vtt".equals(f)) item.setVttPath(filePath);
+                    if ("srt".equals(f) && layerMode == SubtitleGenerator.SubtitleLayerMode.ORIGINAL) item.setSrtPath(filePath);
+                    if ("vtt".equals(f) && layerMode == SubtitleGenerator.SubtitleLayerMode.ORIGINAL) item.setVttPath(filePath);
                     item.setStatus(QueueItem.Status.COMPLETED);
                     item.setProgress(100);
                     item.setOutputPath(filePath);
@@ -809,6 +913,7 @@ public class AutoSubTaskService extends Service {
     private void exportVideoForQueueItemInternal(QueueItem item, boolean burnSubtitles, String fontName,
                                                  SubtitleGenerator.ShortsSubtitleStyle shortsStyle,
                                                  boolean forceMp4SoftSubtitles, File outputDir, VoskModelInfo modelInfo,
+                                                 SubtitleGenerator.SubtitleLayerMode layerMode,
                                                  SubtitleGenerator.VideoExportCallback callback) {
         item.setStatus(QueueItem.Status.EXPORTING);
         item.setProgress(-1);
@@ -817,12 +922,12 @@ public class AutoSubTaskService extends Service {
         publishQueueItems();
 
         subtitleGenerator.exportVideoWithSubtitles(item.getVideoUri(), item.getSubtitles(), burnSubtitles, fontName,
-                shortsStyle, forceMp4SoftSubtitles, outputDir, new SubtitleGenerator.VideoExportCallback() {
+                shortsStyle, forceMp4SoftSubtitles, outputDir, layerMode, new SubtitleGenerator.VideoExportCallback() {
                     @Override
                     public void onVideoExported(String filePath) {
                         handler.post(() -> {
                             registerExport(filePath, ExportRecord.TYPE_VIDEO, item.getVideoUri(), item.getDisplayName(),
-                                    burnSubtitles ? "hard-subtitles" : "soft-subtitles",
+                                    (burnSubtitles ? "hard-" : "soft-") + layerMode.name().toLowerCase(Locale.US) + "-subtitles",
                                     filePath.toLowerCase(Locale.getDefault()).endsWith(".mkv") ? "mkv" : "mp4", modelInfo);
                             if (burnSubtitles) item.setHardVideoPath(filePath);
                             else item.setSoftVideoPath(filePath);
@@ -880,7 +985,7 @@ public class AutoSubTaskService extends Service {
                 "Batch Subtitle Export", (index + 1) + " of " + items.size() + ": " + item.getDisplayName(),
                 -1, item.getId(), activeDownloadModelId, activeDownloadSpeedText, activeDownloadEtaText,
                 activeDownloadPaused, queueRunning, queuedDownloadIds()));
-        saveSubtitlesForQueueItemInternal(item, format, outputDir, modelInfo, new SubtitleGenerator.SubtitleSaveCallback() {
+        saveSubtitlesForQueueItemInternal(item, format, outputDir, modelInfo, SubtitleGenerator.SubtitleLayerMode.ORIGINAL, new SubtitleGenerator.SubtitleSaveCallback() {
             @Override
             public void onSubtitlesSaved(String filePath) {
                 handler.post(() -> batchSaveNext(items, index + 1, format, outputDir, modelInfo, callback));
@@ -909,6 +1014,7 @@ public class AutoSubTaskService extends Service {
                 activeDownloadPaused, queueRunning, queuedDownloadIds()));
         SubtitleGenerator.ShortsSubtitleStyle style = styleResolver == null ? null : styleResolver.styleFor(item);
         exportVideoForQueueItemInternal(item, burnSubtitles, fontName, style, false, outputDir, modelInfo,
+                SubtitleGenerator.SubtitleLayerMode.ORIGINAL,
                 new SubtitleGenerator.VideoExportCallback() {
                     @Override
                     public void onVideoExported(String filePath) {
@@ -1236,7 +1342,9 @@ public class AutoSubTaskService extends Service {
     private void resetStaleQueueItems() {
         List<QueueItem> items = queueStore.getItems();
         for (QueueItem item : items) {
-            if (item.getStatus() == QueueItem.Status.PROCESSING || item.getStatus() == QueueItem.Status.EXPORTING) {
+            if (item.getStatus() == QueueItem.Status.PROCESSING
+                    || item.getStatus() == QueueItem.Status.EXPORTING
+                    || item.getStatus() == QueueItem.Status.TRANSLATING) {
                 item.setStatus(QueueItem.Status.PENDING);
                 item.setProgress(0);
                 queueStore.updateItem(item);
