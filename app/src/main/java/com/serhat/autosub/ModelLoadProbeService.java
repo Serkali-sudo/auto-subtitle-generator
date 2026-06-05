@@ -6,6 +6,8 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.os.ResultReceiver;
 
+import com.whispercpp.whisper.WhisperContext;
+
 import org.vosk.Model;
 
 import java.io.File;
@@ -40,6 +42,27 @@ public class ModelLoadProbeService extends Service {
             modelInfo = modelManager.findById(modelId);
             if (modelInfo == null) {
                 sendError(receiver, "Unknown model");
+                return;
+            }
+
+            if (modelInfo.isWhisper()) {
+                WhisperContext whisperContext;
+                if (modelInfo.isBundled()) {
+                    whisperContext = WhisperContext.createContextFromAsset(
+                            getAssets(), modelInfo.getBundledAssetName());
+                } else {
+                    File modelDirectory = modelManager.getModelDirectory(modelInfo);
+                    File modelFile = new File(modelDirectory, modelInfo.getId() + ".bin");
+                    if (!modelFile.isFile()) {
+                        sendError(receiver, "Model is not downloaded");
+                        return;
+                    }
+                    whisperContext = WhisperContext.createContextFromFile(modelFile.getAbsolutePath());
+                }
+                whisperContext.release();
+                if (receiver != null) {
+                    receiver.send(RESULT_OK, Bundle.EMPTY);
+                }
                 return;
             }
 

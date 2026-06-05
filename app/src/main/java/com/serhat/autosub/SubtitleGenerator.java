@@ -173,20 +173,25 @@ public class SubtitleGenerator {
         if (modelInfo.isWhisper()) {
             executorService.execute(() -> {
                 try {
-                    VoskModelManager modelManager = new VoskModelManager(context);
-                    modelManager.loadCatalog();
-                    File modelDirectory = modelManager.getModelDirectory(modelInfo);
-                    File modelFile = new File(modelDirectory, modelInfo.getId() + ".bin");
-                    if (!modelFile.exists()) {
-                        synchronized (modelLock) {
-                            if (sessionId == currentLoadSessionId) {
-                                callback.onError("Model is not downloaded: " + modelInfo.getLanguage());
+                    WhisperContext loadedContext;
+                    if (modelInfo.isBundled()) {
+                        loadedContext = WhisperContext.createContextFromAsset(
+                                context.getAssets(), modelInfo.getBundledAssetName());
+                    } else {
+                        VoskModelManager modelManager = new VoskModelManager(context);
+                        modelManager.loadCatalog();
+                        File modelDirectory = modelManager.getModelDirectory(modelInfo);
+                        File modelFile = new File(modelDirectory, modelInfo.getId() + ".bin");
+                        if (!modelFile.exists()) {
+                            synchronized (modelLock) {
+                                if (sessionId == currentLoadSessionId) {
+                                    callback.onError("Model is not downloaded: " + modelInfo.getLanguage());
+                                }
                             }
+                            return;
                         }
-                        return;
+                        loadedContext = WhisperContext.createContextFromFile(modelFile.getAbsolutePath());
                     }
-
-                    WhisperContext loadedContext = WhisperContext.createContextFromFile(modelFile.getAbsolutePath());
 
                     synchronized (modelLock) {
                         if (sessionId != currentLoadSessionId) {

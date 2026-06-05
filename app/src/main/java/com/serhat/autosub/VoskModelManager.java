@@ -28,7 +28,7 @@ public class VoskModelManager {
     private static final String KEY_SELECTED_MODEL_ID = "selected_model_id";
     private static final String KEY_COMPATIBILITY_PREFIX = "compatibility_";
     private static final String KEY_LOAD_MODE_PREFIX = "load_mode_";
-    public static final String DEFAULT_MODEL_ID = "model-en-us";
+    public static final String DEFAULT_MODEL_ID = "whisper-base-en-q5_1";
 
     public enum ModelLoadMode {
         FULL_QUALITY("Full quality"),
@@ -83,11 +83,14 @@ public class VoskModelManager {
         if (modelInfo == null) {
             return 100;
         }
-        if ("whisper-base-en".equals(modelInfo.getId())) {
+        if (DEFAULT_MODEL_ID.equals(modelInfo.getId())) {
             return 0;
         }
-        if ("whisper-base".equals(modelInfo.getId())) {
+        if ("whisper-base-en".equals(modelInfo.getId())) {
             return 1;
+        }
+        if ("whisper-base".equals(modelInfo.getId())) {
+            return 2;
         }
         return 100;
     }

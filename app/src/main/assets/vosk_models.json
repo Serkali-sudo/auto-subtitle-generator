@@ -29,8 +29,7 @@
         "license":  "Apache 2.0",
         "details":  "Bundled lightweight US English Vosk model for Android-style local transcription.",
         "downloadUrl":  "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
-        "mobileRecommended":  true,
-        "bundledAssetName":  "model-en-us"
+        "mobileRecommended":  true
     },
     {
         "id":  "vosk-model-small-en-us-0.15",
@@ -889,6 +888,7 @@
         "details":  "Base: balanced Whisper model with useful quality while still being realistic for mobile. English-only model optimized for English audio. Q5 quantization cuts size more aggressively with a possible accuracy tradeoff.",
         "downloadUrl":  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin",
         "mobileRecommended":  true,
+        "bundledAssetName":  "models/ggml-base.en-q5_1.bin",
         "isWhisper":  true
     },
     {

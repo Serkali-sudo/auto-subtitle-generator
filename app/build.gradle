@@ -44,7 +44,6 @@ dependencies {
     implementation 'androidx.fragment:fragment:1.8.9'
     implementation 'net.java.dev.jna:jna:5.18.1@aar'
     implementation 'com.alphacephei:vosk-android:0.3.75@aar'
-    implementation project(':models')
     implementation project(':whisper')
     implementation(files("libs/ffmpeg-kit.aar"))
     implementation 'com.arthenica:smart-exception-java:0.2.1'
