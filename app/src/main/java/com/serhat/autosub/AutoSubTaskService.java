@@ -47,6 +47,7 @@ public class AutoSubTaskService extends Service {
     private static final String KEY_SUBTITLE_MAX_LENGTH = "subtitle_max_length";
     private static final String KEY_KEEP_SENTENCES_TOGETHER = "keep_sentences_together";
     private static final String KEY_SUPPRESS_WHISPER_SDH = "suppress_whisper_sdh";
+    private static final String KEY_WHISPER_VAD_ENABLED = "whisper_vad_enabled";
     private static final String KEY_WHISPER_LANGUAGE = "whisper_language";
     private static final String KEY_TRANSLATE_SUBTITLES = "translate_subtitles";
     private static final String KEY_TRANSLATION_SOURCE_LANGUAGE = "translation_source_language";
@@ -711,6 +712,7 @@ public class AutoSubTaskService extends Service {
         subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));
+        subtitleGenerator.setWhisperVadEnabled(settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, true));
         subtitleGenerator.setWhisperLanguage(settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto"));
         subtitleGenerator.setTranslationSettings(
                 settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false),

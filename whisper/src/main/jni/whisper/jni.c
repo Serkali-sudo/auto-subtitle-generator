@@ -6,14 +6,13 @@
 #include <stdio.h>
 #include <sys/sysinfo.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "whisper.h"
 #include "ggml.h"
 
 #include <stdbool.h>
-#include <pthread.h>
 
-static bool g_should_abort = false;
-static pthread_mutex_t g_abort_mutex = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool g_should_abort = ATOMIC_VAR_INIT(false);
 
 #define UNUSED(x) (void)(x)
 #define TAG "JNI"
@@ -122,7 +121,13 @@ static bool json_builder_append_escaped_string(struct json_builder *builder, con
         return false;
     }
 
-    for (const unsigned char *c = (const unsigned char *) text; c != NULL && *c != '\0';) {
+    if (text == NULL) {
+        text = "";
+    }
+
+    const unsigned char *c = (const unsigned char *) text;
+    const unsigned char *end = c + strlen(text);
+    while (c < end) {
         char escaped[7];
         switch (*c) {
             case '"':
@@ -170,7 +175,7 @@ static bool json_builder_append_escaped_string(struct json_builder *builder, con
                     } else if ((*c & 0xF8) == 0xF0) {
                         len = 4;
                     }
-                    const size_t remaining = strlen((const char *) c);
+                    const size_t remaining = (size_t) (end - c);
                     bool valid = len > 0 && len <= remaining;
                     for (size_t i = 1; valid && i < len; i++) {
                         valid = (c[i] & 0xC0) == 0x80;
@@ -325,13 +330,31 @@ static char *empty_json_array(void) {
 }
 
 static char *build_token_timings_json(struct whisper_context *ctx, int segment_id) {
+    const int token_count = whisper_full_n_tokens(ctx, segment_id);
+    if (token_count <= 0) {
+        return empty_json_array();
+    }
+
+    struct whisper_token_data *tokens = (struct whisper_token_data *) calloc(
+            (size_t) token_count,
+            sizeof(struct whisper_token_data)
+    );
+    int64_t *next_dtw_times = (int64_t *) malloc((size_t) token_count * sizeof(int64_t));
+    if (tokens == NULL || next_dtw_times == NULL) {
+        free(tokens);
+        free(next_dtw_times);
+        return empty_json_array();
+    }
+
     struct json_builder builder = {};
-    if (!json_builder_append(&builder, "[")) {
+    if (!json_builder_reserve(&builder, (size_t) token_count * 96 + 2)
+            || !json_builder_append(&builder, "[")) {
+        free(tokens);
+        free(next_dtw_times);
         free(builder.data);
         return empty_json_array();
     }
 
-    const int token_count = whisper_full_n_tokens(ctx, segment_id);
     const whisper_token eot = whisper_token_eot(ctx);
     bool first = true;
     bool has_dtw_timings = false;
@@ -339,17 +362,33 @@ static char *build_token_timings_json(struct whisper_context *ctx, int segment_i
 
     for (int token_index = 0; token_index < token_count; token_index++) {
         const struct whisper_token_data token = whisper_full_get_token_data(ctx, segment_id, token_index);
+        tokens[token_index] = token;
+        next_dtw_times[token_index] = -1;
         if (token.id < eot && token.t_dtw > previous_dtw) {
             if (previous_dtw >= 0) {
                 has_dtw_timings = true;
-                break;
             }
             previous_dtw = token.t_dtw;
         }
     }
 
+    if (has_dtw_timings) {
+        for (int token_index = 0; token_index < token_count; token_index++) {
+            const int64_t token_t0 = tokens[token_index].t_dtw;
+            if (tokens[token_index].id >= eot || token_t0 < 0) {
+                continue;
+            }
+            for (int next_index = token_index + 1; next_index < token_count; next_index++) {
+                if (tokens[next_index].id < eot && tokens[next_index].t_dtw > token_t0) {
+                    next_dtw_times[token_index] = tokens[next_index].t_dtw;
+                    break;
+                }
+            }
+        }
+    }
+
     for (int token_index = 0; token_index < token_count; token_index++) {
-        const struct whisper_token_data token = whisper_full_get_token_data(ctx, segment_id, token_index);
+        const struct whisper_token_data token = tokens[token_index];
         const char *token_text = whisper_full_get_token_text(ctx, segment_id, token_index);
         if (token.id >= eot || token_text == NULL || token_text[0] == '\0') {
             continue;
@@ -359,13 +398,7 @@ static char *build_token_timings_json(struct whisper_context *ctx, int segment_i
         int64_t token_t0 = use_dtw ? token.t_dtw : token.t0;
         int64_t token_t1 = use_dtw ? -1 : token.t1;
         if (use_dtw) {
-            for (int next_index = token_index + 1; next_index < token_count; next_index++) {
-                const struct whisper_token_data next = whisper_full_get_token_data(ctx, segment_id, next_index);
-                if (next.id < eot && next.t_dtw > token_t0) {
-                    token_t1 = next.t_dtw;
-                    break;
-                }
-            }
+            token_t1 = next_dtw_times[token_index];
             if (token_t1 <= token_t0) {
                 const int64_t segment_t1 = whisper_full_get_segment_t1(ctx, segment_id);
                 token_t1 = token_t0 + 20;
@@ -387,6 +420,8 @@ static char *build_token_timings_json(struct whisper_context *ctx, int segment_i
         );
         if (!json_builder_append(&builder, numbers)
                 || !json_builder_append_escaped_string(&builder, token_text)) {
+            free(tokens);
+            free(next_dtw_times);
             free(builder.data);
             return empty_json_array();
         }
@@ -400,6 +435,8 @@ static char *build_token_timings_json(struct whisper_context *ctx, int segment_i
                 token.p
         );
         if (!json_builder_append(&builder, numbers)) {
+            free(tokens);
+            free(next_dtw_times);
             free(builder.data);
             return empty_json_array();
         }
@@ -408,55 +445,89 @@ static char *build_token_timings_json(struct whisper_context *ctx, int segment_i
     }
 
     if (!json_builder_append(&builder, "]")) {
+        free(tokens);
+        free(next_dtw_times);
         free(builder.data);
         return empty_json_array();
     }
 
+    free(tokens);
+    free(next_dtw_times);
     return builder.data;
 }
 
 struct input_stream_context {
     size_t offset;
     JNIEnv * env;
-    jobject thiz;
     jobject input_stream;
 
-    jmethodID mid_available;
     jmethodID mid_read;
+
+    jbyteArray buffer;
+    jsize buffer_size;
+    bool eof;
 };
 
 size_t inputStreamRead(void * ctx, void * output, size_t read_size) {
     struct input_stream_context* is = (struct input_stream_context*)ctx;
+    const jsize max_buffer_size = 64 * 1024;
+    size_t total_read = 0;
 
-    jint avail_size = (*is->env)->CallIntMethod(is->env, is->input_stream, is->mid_available);
-    jint size_to_copy = read_size < avail_size ? (jint)read_size : avail_size;
-
-    jbyteArray byte_array = (*is->env)->NewByteArray(is->env, size_to_copy);
-
-    jint n_read = (*is->env)->CallIntMethod(is->env, is->input_stream, is->mid_read, byte_array, 0, size_to_copy);
-
-    if (size_to_copy != read_size || size_to_copy != n_read) {
-        LOGI("Insufficient Read: Req=%zu, ToCopy=%d, Available=%d", read_size, size_to_copy, n_read);
+    if (is->buffer == NULL) {
+        is->buffer = (*is->env)->NewByteArray(is->env, max_buffer_size);
+        if (is->buffer == NULL) {
+            is->eof = true;
+            return 0;
+        }
+        is->buffer_size = max_buffer_size;
     }
 
-    jbyte* byte_array_elements = (*is->env)->GetByteArrayElements(is->env, byte_array, NULL);
-    memcpy(output, byte_array_elements, size_to_copy);
-    (*is->env)->ReleaseByteArrayElements(is->env, byte_array, byte_array_elements, JNI_ABORT);
+    while (total_read < read_size) {
+        size_t remaining = read_size - total_read;
+        jsize size_to_read = remaining < (size_t) is->buffer_size
+                ? (jsize) remaining
+                : is->buffer_size;
 
-    (*is->env)->DeleteLocalRef(is->env, byte_array);
+        jint n_read = (*is->env)->CallIntMethod(
+                is->env,
+                is->input_stream,
+                is->mid_read,
+                is->buffer,
+                0,
+                size_to_read
+        );
+        if ((*is->env)->ExceptionCheck(is->env) || n_read <= 0) {
+            is->eof = true;
+            break;
+        }
 
-    is->offset += size_to_copy;
+        (*is->env)->GetByteArrayRegion(
+                is->env,
+                is->buffer,
+                0,
+                n_read,
+                (jbyte *) output + total_read
+        );
+        if ((*is->env)->ExceptionCheck(is->env)) {
+            is->eof = true;
+            break;
+        }
 
-    return size_to_copy;
+        total_read += (size_t) n_read;
+        is->offset += (size_t) n_read;
+    }
+
+    if (total_read != read_size && !(*is->env)->ExceptionCheck(is->env)) {
+        LOGI("Insufficient Read: Req=%zu, Read=%zu", read_size, total_read);
+    }
+    return total_read;
 }
 bool inputStreamEof(void * ctx) {
     struct input_stream_context* is = (struct input_stream_context*)ctx;
-
-    jint result = (*is->env)->CallIntMethod(is->env, is->input_stream, is->mid_available);
-    return result <= 0;
+    return is->eof;
 }
 void inputStreamClose(void * ctx) {
-
+    UNUSED(ctx);
 }
 
 JNIEXPORT jlong JNICALL
@@ -470,11 +541,9 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContextFromInputStream
 
     inp_ctx.offset = 0;
     inp_ctx.env = env;
-    inp_ctx.thiz = thiz;
     inp_ctx.input_stream = input_stream;
 
     jclass cls = (*env)->GetObjectClass(env, input_stream);
-    inp_ctx.mid_available = (*env)->GetMethodID(env, cls, "available", "()I");
     inp_ctx.mid_read = (*env)->GetMethodID(env, cls, "read", "([BII)I");
 
     loader.context = &inp_ctx;
@@ -482,9 +551,10 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContextFromInputStream
     loader.eof = inputStreamEof;
     loader.close = inputStreamClose;
 
-    loader.eof(loader.context);
-
-    context = whisper_init(&loader);
+    context = whisper_init_with_params(&loader, whisper_context_default_params());
+    if (inp_ctx.buffer != NULL) {
+        (*env)->DeleteLocalRef(env, inp_ctx.buffer);
+    }
     return (jlong) context;
 }
 
@@ -611,25 +681,22 @@ void progress_callback(struct whisper_context * ctx, struct whisper_state * stat
 }
 
 static bool abort_callback(void* user_data) {
-    bool should_abort;
-    pthread_mutex_lock(&g_abort_mutex);
-    should_abort = g_should_abort;
-    pthread_mutex_unlock(&g_abort_mutex);
-    return should_abort;
+    UNUSED(user_data);
+    return atomic_load_explicit(&g_should_abort, memory_order_relaxed);
 }
 
 JNIEXPORT void JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_resetAbort(JNIEnv* env, jobject thiz) {
-    pthread_mutex_lock(&g_abort_mutex);
-    g_should_abort = false;
-    pthread_mutex_unlock(&g_abort_mutex);
+    UNUSED(env);
+    UNUSED(thiz);
+    atomic_store_explicit(&g_should_abort, false, memory_order_relaxed);
 }
 
 JNIEXPORT void JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_stopTranscription(JNIEnv* env, jobject thiz) {
-    pthread_mutex_lock(&g_abort_mutex);
-    g_should_abort = true;
-    pthread_mutex_unlock(&g_abort_mutex);
+    UNUSED(env);
+    UNUSED(thiz);
+    atomic_store_explicit(&g_should_abort, true, memory_order_relaxed);
 }
 
 
@@ -652,11 +719,6 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     // Get method IDs
     jclass callbackClass = (*env)->GetObjectClass(env, callback_state.callback);
 
-    jmethodID toStringMethod = (*env)->GetMethodID(env, callbackClass, "toString", "()Ljava/lang/String;");
-    jstring str = (*env)->CallObjectMethod(env, callback_state.callback, toStringMethod);
-    const char *cStr = (*env)->GetStringUTFChars(env, str, NULL);
-    __android_log_print(ANDROID_LOG_DEBUG, "JNI", "Callback class: %s", cStr);
-    (*env)->ReleaseStringUTFChars(env, str, cStr);
     callback_state.on_new_segment_method = (*env)->GetMethodID(
             env,
             callbackClass,
@@ -678,6 +740,10 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
 
     struct whisper_context *context = (struct whisper_context *) context_ptr;
     jfloat *audio_data_arr = (*env)->GetFloatArrayElements(env, audio_data, NULL);
+    if (audio_data_arr == NULL) {
+        (*env)->DeleteGlobalRef(env, callback_state.callback);
+        return;
+    }
     const jsize audio_data_length = (*env)->GetArrayLength(env, audio_data);
 
     // Get language parameter (default to "auto" if null)
@@ -718,6 +784,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     LOGI("About to run whisper_full with callbacks (language: %s, suppress_nst: %d)",
             language_str, params.suppress_nst);
     int result = whisper_full(context, params, audio_data_arr, audio_data_length);
+    (*env)->ReleaseFloatArrayElements(env, audio_data, audio_data_arr, JNI_ABORT);
 
     // Cleanup language string if we allocated it
     if (language != NULL) {
@@ -732,7 +799,6 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     }
 
     // Cleanup
-    (*env)->ReleaseFloatArrayElements(env, audio_data, audio_data_arr, JNI_ABORT);
     (*env)->DeleteGlobalRef(env, callback_state.callback);
 }
 

@@ -15,6 +15,11 @@ import com.google.mlkit.nl.translate.TranslateLanguage;
 import com.google.mlkit.nl.translate.Translation;
 import com.google.mlkit.nl.translate.Translator;
 import com.google.mlkit.nl.translate.TranslatorOptions;
+import com.konovalov.vad.webrtc.Vad;
+import com.konovalov.vad.webrtc.VadWebRTC;
+import com.konovalov.vad.webrtc.config.FrameSize;
+import com.konovalov.vad.webrtc.config.Mode;
+import com.konovalov.vad.webrtc.config.SampleRate;
 import com.whispercpp.whisper.WhisperCallback;
 import com.whispercpp.whisper.WhisperContext;
 
@@ -41,6 +46,7 @@ import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.io.InputStreamReader;
 import java.io.InputStream;
+import java.util.Arrays;
 import java.util.Collections;
 
 public class SubtitleGenerator {
@@ -51,6 +57,14 @@ public class SubtitleGenerator {
     private static final int PROGRESS_UI_UPDATE_STEP = 5;
     private static final int WHISPER_SAMPLE_RATE = 16000;
     private static final int WHISPER_CHUNK_SECONDS = 180;
+    private static final int WHISPER_VAD_BATCH_SECONDS = 600;
+    private static final int VAD_FRAME_SAMPLES = 320;
+    private static final int VAD_FRAME_BYTES = VAD_FRAME_SAMPLES * 2;
+    private static final int VAD_SPEECH_DURATION_MS = 50;
+    private static final int VAD_SILENCE_DURATION_MS = 300;
+    private static final int VAD_PADDING_MS = 250;
+    private static final int VAD_MERGE_GAP_MS = 750;
+    private static final long WHISPER_WORD_GAP_SPLIT_MS = 1200;
     private static final int WAV_HEADER_BYTES = 44;
     public static final int PROGRESS_EXTRACTING_AUDIO = -1;
     public static final int PROGRESS_PREPARING_AUDIO = -2;
@@ -78,6 +92,7 @@ public class SubtitleGenerator {
     private volatile int maxSubtitleLength = DEFAULT_MAX_SUBTITLE_LENGTH;
     private volatile boolean keepSentencesTogether = DEFAULT_KEEP_SENTENCES_TOGETHER;
     private volatile boolean suppressWhisperSdh = true;
+    private volatile boolean whisperVadEnabled = true;
     private volatile String whisperLanguage = "auto";
     private volatile String lastTranscriptionLanguage = null;
     private volatile boolean translationEnabled = false;
@@ -99,6 +114,10 @@ public class SubtitleGenerator {
 
     public void setSuppressWhisperSdh(boolean suppressWhisperSdh) {
         this.suppressWhisperSdh = suppressWhisperSdh;
+    }
+
+    public void setWhisperVadEnabled(boolean whisperVadEnabled) {
+        this.whisperVadEnabled = whisperVadEnabled;
     }
 
     public void setWhisperLanguage(String whisperLanguage) {
@@ -1544,48 +1563,296 @@ public class SubtitleGenerator {
         int nativeMaxSegmentLength = keepSentencesTogether ? 0 : maxSubtitleLength;
         long totalSamples = Math.max(0, (audioFile.length() - WAV_HEADER_BYTES) / 2);
         int maxChunkSamples = WHISPER_SAMPLE_RATE * WHISPER_CHUNK_SECONDS;
-        long processedSamples = 0;
+        int maxVadBatchSamples = WHISPER_SAMPLE_RATE * WHISPER_VAD_BATCH_SECONDS;
         String activeLanguage = language;
+        long whisperPipelineStartMs = System.currentTimeMillis();
+        boolean useVad = whisperVadEnabled;
+        if (!useVad) {
+            long processedSamples = 0;
+            long whisperWallMs = 0;
 
-        try (FileInputStream inputStream = new FileInputStream(audioFile)) {
-            long skipped = inputStream.skip(WAV_HEADER_BYTES);
-            if (skipped != WAV_HEADER_BYTES) {
-                throw new IOException("Audio file too short");
+            try (FileInputStream inputStream = new FileInputStream(audioFile)) {
+                skipFully(inputStream, WAV_HEADER_BYTES);
+
+                while (!isCancelled && processedSamples < totalSamples) {
+                    int samplesToRead = (int) Math.min(maxChunkSamples, totalSamples - processedSamples);
+                    float[] audioData = readWavFloatChunk(inputStream, samplesToRead);
+                    if (audioData.length == 0) {
+                        break;
+                    }
+                    long chunkOffsetMs = processedSamples * 1000L / WHISPER_SAMPLE_RATE;
+                    int chunkStartProgress = totalSamples > 0
+                            ? (int) Math.min(100, processedSamples * 100 / totalSamples)
+                            : 0;
+                    int chunkProgressSpan = totalSamples > 0
+                            ? Math.max(1, (int) Math.min(100, audioData.length * 100L / totalSamples))
+                            : 100;
+
+                    long chunkTranscribeStartMs = System.currentTimeMillis();
+                    transcribeWhisperChunk(activeWhisperContext, audioData, activeLanguage, chunkOffsetMs,
+                            nativeMaxSegmentLength, lastPartialUpdateMs, lastProgressUpdateMs,
+                            lastDispatchedProgress, chunkStartProgress, chunkProgressSpan, subtitles, callback);
+                    whisperWallMs += System.currentTimeMillis() - chunkTranscribeStartMs;
+
+                    String detectedLanguage = activeWhisperContext.getDetectedLanguage();
+                    String resolvedDetectedLanguage = resolveMlKitLanguage(detectedLanguage);
+                    if (resolvedDetectedLanguage != null) {
+                        lastTranscriptionLanguage = resolvedDetectedLanguage;
+                        if ("auto".equals(activeLanguage)) {
+                            activeLanguage = resolvedDetectedLanguage;
+                        }
+                        Log.d(TAG, "Whisper transcription language for translation: " + resolvedDetectedLanguage);
+                    }
+
+                    processedSamples += audioData.length;
+                }
             }
 
-            while (!isCancelled && processedSamples < totalSamples) {
-                int samplesToRead = (int) Math.min(maxChunkSamples, totalSamples - processedSamples);
-                float[] audioData = readWavFloatChunk(inputStream, samplesToRead);
-                if (audioData.length == 0) {
-                    break;
+            long totalWallMs = System.currentTimeMillis() - whisperPipelineStartMs;
+            Log.i(TAG, "Whisper VAD disabled: whisperInput="
+                    + formatDurationForLog(samplesToMs(processedSamples))
+                    + ", skipped=0:00.000 (0.0%)"
+                    + ", whisperWall=" + whisperWallMs + "ms"
+                    + ", totalWhisperPipelineWall=" + totalWallMs + "ms");
+            return subtitles;
+        }
+
+        long vadStartMs = System.currentTimeMillis();
+        List<SpeechWindow> speechWindows = detectSpeechWindows(audioFile, totalSamples);
+        List<WhisperVadBatch> vadBatches = buildWhisperVadBatches(audioFile, speechWindows, maxVadBatchSamples);
+        long vadWallMs = System.currentTimeMillis() - vadStartMs;
+        long speechSamples = sumSpeechWindowSamples(speechWindows);
+        long skippedSamples = Math.max(0, totalSamples - speechSamples);
+        double skippedPercent = totalSamples > 0 ? skippedSamples * 100.0 / totalSamples : 0.0;
+        Log.i(TAG, "Whisper VAD scan: windows=" + speechWindows.size()
+                + ", batches=" + vadBatches.size()
+                + ", totalAudio=" + formatDurationForLog(samplesToMs(totalSamples))
+                + ", whisperInput=" + formatDurationForLog(samplesToMs(speechSamples))
+                + ", skipped=" + formatDurationForLog(samplesToMs(skippedSamples))
+                + " (" + String.format(Locale.US, "%.1f", skippedPercent) + "%)"
+                + ", vadWall=" + vadWallMs + "ms");
+
+        long whisperInputSamples = 0;
+        long whisperWallMs = 0;
+        for (WhisperVadBatch vadBatch : vadBatches) {
+            if (isCancelled || vadBatch.audioData.length == 0) {
+                break;
+            }
+            int chunkStartProgress = totalSamples > 0
+                    ? (int) Math.min(100, vadBatch.firstOriginalSample * 100 / totalSamples)
+                    : 0;
+            int chunkProgressSpan = totalSamples > 0
+                    ? Math.max(1, (int) Math.min(100, vadBatch.audioData.length * 100L / totalSamples))
+                    : 100;
+
+            long chunkTranscribeStartMs = System.currentTimeMillis();
+            transcribeWhisperChunk(activeWhisperContext, vadBatch.audioData, activeLanguage,
+                    vadBatch.timeMapper, nativeMaxSegmentLength, lastPartialUpdateMs, lastProgressUpdateMs,
+                    lastDispatchedProgress, chunkStartProgress, chunkProgressSpan, subtitles, callback);
+            whisperWallMs += System.currentTimeMillis() - chunkTranscribeStartMs;
+            whisperInputSamples += vadBatch.audioData.length;
+
+            String detectedLanguage = activeWhisperContext.getDetectedLanguage();
+            String resolvedDetectedLanguage = resolveMlKitLanguage(detectedLanguage);
+            if (resolvedDetectedLanguage != null) {
+                lastTranscriptionLanguage = resolvedDetectedLanguage;
+                if ("auto".equals(activeLanguage)) {
+                    activeLanguage = resolvedDetectedLanguage;
                 }
-                long chunkOffsetMs = processedSamples * 1000L / WHISPER_SAMPLE_RATE;
-                int chunkStartProgress = totalSamples > 0
-                        ? (int) Math.min(100, processedSamples * 100 / totalSamples)
-                        : 0;
-                int chunkProgressSpan = totalSamples > 0
-                        ? Math.max(1, (int) Math.min(100, audioData.length * 100L / totalSamples))
-                        : 100;
-
-                transcribeWhisperChunk(activeWhisperContext, audioData, activeLanguage, chunkOffsetMs,
-                        nativeMaxSegmentLength, lastPartialUpdateMs, lastProgressUpdateMs,
-                        lastDispatchedProgress, chunkStartProgress, chunkProgressSpan, subtitles, callback);
-
-                String detectedLanguage = activeWhisperContext.getDetectedLanguage();
-                String resolvedDetectedLanguage = resolveMlKitLanguage(detectedLanguage);
-                if (resolvedDetectedLanguage != null) {
-                    lastTranscriptionLanguage = resolvedDetectedLanguage;
-                    if ("auto".equals(activeLanguage)) {
-                        activeLanguage = resolvedDetectedLanguage;
-                    }
-                    Log.d(TAG, "Whisper transcription language for translation: " + resolvedDetectedLanguage);
-                }
-
-                processedSamples += audioData.length;
+                Log.d(TAG, "Whisper transcription language for translation: " + resolvedDetectedLanguage);
             }
         }
 
+        long totalWallMs = System.currentTimeMillis() - whisperPipelineStartMs;
+        Log.i(TAG, "Whisper VAD result: whisperInput="
+                + formatDurationForLog(samplesToMs(whisperInputSamples))
+                + ", skipped=" + formatDurationForLog(samplesToMs(Math.max(0, totalSamples - whisperInputSamples)))
+                + " (" + String.format(Locale.US, "%.1f", totalSamples > 0
+                ? Math.max(0, totalSamples - whisperInputSamples) * 100.0 / totalSamples
+                : 0.0) + "%)"
+                + ", vadWall=" + vadWallMs + "ms"
+                + ", whisperWall=" + whisperWallMs + "ms"
+                + ", totalVadPipelineWall=" + totalWallMs + "ms");
         return subtitles;
+    }
+
+    private long sumSpeechWindowSamples(List<SpeechWindow> speechWindows) {
+        long total = 0;
+        for (SpeechWindow speechWindow : speechWindows) {
+            total += Math.max(0, speechWindow.endSample - speechWindow.startSample);
+        }
+        return total;
+    }
+
+    private List<WhisperVadBatch> buildWhisperVadBatches(File audioFile,
+                                                         List<SpeechWindow> speechWindows,
+                                                         int maxBatchSamples) throws IOException {
+        List<WhisperVadBatch> batches = new ArrayList<>();
+        WhisperVadBatchBuilder builder = new WhisperVadBatchBuilder(maxBatchSamples);
+
+        for (SpeechWindow speechWindow : speechWindows) {
+            long windowOffsetSamples = speechWindow.startSample;
+            while (!isCancelled && windowOffsetSamples < speechWindow.endSample) {
+                int samplesToRead = (int) Math.min(maxBatchSamples,
+                        speechWindow.endSample - windowOffsetSamples);
+                if (builder.hasAudio() && builder.sampleCount() + samplesToRead > maxBatchSamples) {
+                    batches.add(builder.build());
+                    builder = new WhisperVadBatchBuilder(maxBatchSamples);
+                }
+
+                float[] audioData = readWavFloatRange(audioFile, windowOffsetSamples, samplesToRead);
+                if (audioData.length == 0) {
+                    break;
+                }
+                builder.append(audioData, windowOffsetSamples);
+                windowOffsetSamples += audioData.length;
+
+                if (builder.sampleCount() >= maxBatchSamples) {
+                    batches.add(builder.build());
+                    builder = new WhisperVadBatchBuilder(maxBatchSamples);
+                }
+            }
+        }
+
+        if (builder.hasAudio()) {
+            batches.add(builder.build());
+        }
+        return batches;
+    }
+
+    private long samplesToMs(long samples) {
+        return samples * 1000L / WHISPER_SAMPLE_RATE;
+    }
+
+    private String formatDurationForLog(long durationMs) {
+        long minutes = durationMs / 60000L;
+        long seconds = (durationMs % 60000L) / 1000L;
+        long milliseconds = durationMs % 1000L;
+        return String.format(Locale.US, "%d:%02d.%03d", minutes, seconds, milliseconds);
+    }
+
+    private List<SpeechWindow> detectSpeechWindows(File audioFile, long totalSamples) throws IOException {
+        List<SpeechWindow> windows = new ArrayList<>();
+        if (totalSamples <= 0) {
+            return windows;
+        }
+
+        VadWebRTC vad = Vad.builder()
+                .setSampleRate(SampleRate.SAMPLE_RATE_16K)
+                .setFrameSize(FrameSize.FRAME_SIZE_320)
+                .setMode(Mode.VERY_AGGRESSIVE)
+                .setSpeechDurationMs(VAD_SPEECH_DURATION_MS)
+                .setSilenceDurationMs(VAD_SILENCE_DURATION_MS)
+                .build();
+
+        long paddingSamples = msToSamples(VAD_PADDING_MS);
+        long currentSpeechStartSample = -1;
+        long currentSpeechEndSample = -1;
+        long frameStartSample = 0;
+
+        try (FileInputStream inputStream = new FileInputStream(audioFile)) {
+            skipFully(inputStream, WAV_HEADER_BYTES);
+            byte[] frame = new byte[VAD_FRAME_BYTES];
+
+            while (!isCancelled && frameStartSample < totalSamples) {
+                int bytesRead = readFrame(inputStream, frame);
+                if (bytesRead <= 0) {
+                    break;
+                }
+                if (bytesRead < VAD_FRAME_BYTES) {
+                    for (int i = bytesRead; i < VAD_FRAME_BYTES; i++) {
+                        frame[i] = 0;
+                    }
+                }
+
+                long actualFrameSamples = Math.min(VAD_FRAME_SAMPLES, totalSamples - frameStartSample);
+                boolean isSpeech = vad.isSpeech(frame);
+                if (isSpeech) {
+                    if (currentSpeechStartSample < 0) {
+                        currentSpeechStartSample = Math.max(0, frameStartSample - paddingSamples);
+                    }
+                    currentSpeechEndSample = Math.min(totalSamples,
+                            frameStartSample + actualFrameSamples + paddingSamples);
+                } else if (currentSpeechStartSample >= 0) {
+                    appendSpeechWindow(windows, currentSpeechStartSample, currentSpeechEndSample, totalSamples);
+                    currentSpeechStartSample = -1;
+                    currentSpeechEndSample = -1;
+                }
+
+                frameStartSample += actualFrameSamples;
+            }
+        } finally {
+            try {
+                vad.close();
+            } catch (Throwable e) {
+                Log.w(TAG, "Error closing WebRTC VAD", e);
+            }
+        }
+
+        if (currentSpeechStartSample >= 0) {
+            appendSpeechWindow(windows, currentSpeechStartSample, currentSpeechEndSample, totalSamples);
+        }
+        return windows;
+    }
+
+    private void appendSpeechWindow(List<SpeechWindow> windows, long startSample,
+                                    long endSample, long totalSamples) {
+        long normalizedStart = Math.max(0, Math.min(startSample, totalSamples));
+        long normalizedEnd = Math.max(normalizedStart, Math.min(endSample, totalSamples));
+        if (normalizedEnd <= normalizedStart) {
+            return;
+        }
+
+        long mergeGapSamples = msToSamples(VAD_MERGE_GAP_MS);
+        if (!windows.isEmpty()) {
+            SpeechWindow previous = windows.get(windows.size() - 1);
+            if (normalizedStart <= previous.endSample + mergeGapSamples) {
+                previous.endSample = Math.max(previous.endSample, normalizedEnd);
+                return;
+            }
+        }
+        windows.add(new SpeechWindow(normalizedStart, normalizedEnd));
+    }
+
+    private long msToSamples(long milliseconds) {
+        return milliseconds * WHISPER_SAMPLE_RATE / 1000L;
+    }
+
+    private int readFrame(FileInputStream inputStream, byte[] frame) throws IOException {
+        int totalRead = 0;
+        while (totalRead < frame.length) {
+            int read = inputStream.read(frame, totalRead, frame.length - totalRead);
+            if (read == -1) {
+                break;
+            }
+            totalRead += read;
+        }
+        return totalRead;
+    }
+
+    private void skipFully(FileInputStream inputStream, long bytesToSkip) throws IOException {
+        long skippedTotal = 0;
+        while (skippedTotal < bytesToSkip) {
+            long skipped = inputStream.skip(bytesToSkip - skippedTotal);
+            if (skipped <= 0) {
+                if (inputStream.read() == -1) {
+                    throw new IOException("Audio file too short");
+                }
+                skipped = 1;
+            }
+            skippedTotal += skipped;
+        }
+    }
+
+    private float[] readWavFloatRange(File file, long startSample, int requestedSamples) throws IOException {
+        if (requestedSamples <= 0) {
+            return new float[0];
+        }
+
+        try (FileInputStream inputStream = new FileInputStream(file)) {
+            skipFully(inputStream, WAV_HEADER_BYTES + startSample * 2L);
+            return readWavFloatChunk(inputStream, requestedSamples);
+        }
     }
 
     private void transcribeWhisperChunk(WhisperContext activeWhisperContext,
@@ -1600,7 +1867,42 @@ public class SubtitleGenerator {
                                         int chunkProgressSpan,
                                         List<SubtitleEntry> subtitles,
                                         SubtitleGenerationCallback callback) {
-        activeWhisperContext.transcribeData(audioData, language, true,
+        transcribeWhisperChunk(activeWhisperContext, audioData, language, null, chunkOffsetMs,
+                nativeMaxSegmentLength, lastPartialUpdateMs, lastProgressUpdateMs,
+                lastDispatchedProgress, chunkStartProgress, chunkProgressSpan, subtitles, callback);
+    }
+
+    private void transcribeWhisperChunk(WhisperContext activeWhisperContext,
+                                        float[] audioData,
+                                        String language,
+                                        TimeMapper timeMapper,
+                                        int nativeMaxSegmentLength,
+                                        long[] lastPartialUpdateMs,
+                                        long[] lastProgressUpdateMs,
+                                        int[] lastDispatchedProgress,
+                                        int chunkStartProgress,
+                                        int chunkProgressSpan,
+                                        List<SubtitleEntry> subtitles,
+                                        SubtitleGenerationCallback callback) {
+        transcribeWhisperChunk(activeWhisperContext, audioData, language, timeMapper, 0,
+                nativeMaxSegmentLength, lastPartialUpdateMs, lastProgressUpdateMs,
+                lastDispatchedProgress, chunkStartProgress, chunkProgressSpan, subtitles, callback);
+    }
+
+    private void transcribeWhisperChunk(WhisperContext activeWhisperContext,
+                                        float[] audioData,
+                                        String language,
+                                        TimeMapper timeMapper,
+                                        long chunkOffsetMs,
+                                        int nativeMaxSegmentLength,
+                                        long[] lastPartialUpdateMs,
+                                        long[] lastProgressUpdateMs,
+                                        int[] lastDispatchedProgress,
+                                        int chunkStartProgress,
+                                        int chunkProgressSpan,
+                                        List<SubtitleEntry> subtitles,
+                                        SubtitleGenerationCallback callback) {
+        activeWhisperContext.transcribeDataWithCallbacks(audioData, language,
                 nativeMaxSegmentLength, suppressWhisperSdh, new WhisperCallback() {
             @Override
             public void onNewSegment(long startMs, long endMs, String text, String tokenTimingsJson) {
@@ -1617,10 +1919,17 @@ public class SubtitleGenerator {
                     Log.d(TAG, "Skipping Whisper SDH caption: \"" + displayText.trim() + "\"");
                     return;
                 }
-                long segmentStartMs = chunkOffsetMs + startMs * 10;
-                long segmentEndMs = chunkOffsetMs + endMs * 10;
+                long compactSegmentStartMs = startMs * 10;
+                long compactSegmentEndMs = endMs * 10;
+                long segmentStartMs = timeMapper == null
+                        ? chunkOffsetMs + compactSegmentStartMs
+                        : timeMapper.mapCompactMsToOriginalMs(compactSegmentStartMs);
+                long segmentEndMs = timeMapper == null
+                        ? chunkOffsetMs + compactSegmentEndMs
+                        : timeMapper.mapCompactMsToOriginalMs(compactSegmentEndMs);
                 List<WordTiming> timedWords = parseWhisperTokenTimings(
-                        tokenTimingsJson, chunkOffsetMs, segmentStartMs, segmentEndMs, displayText);
+                        tokenTimingsJson, chunkOffsetMs, timeMapper,
+                        segmentStartMs, segmentEndMs, displayText);
                 if (VERBOSE_SUBTITLE_LOGS && !timedWords.isEmpty()) {
                     Log.d(TAG, "Whisper word timing range: startMs=" + timedWords.get(0).getStartMs()
                             + ", endMs=" + timedWords.get(timedWords.size() - 1).getEndMs()
@@ -1669,6 +1978,7 @@ public class SubtitleGenerator {
 
     private List<WordTiming> parseWhisperTokenTimings(String tokenTimingsJson,
                                                        long tokenOffsetMs,
+                                                       TimeMapper timeMapper,
                                                        long segmentStartMs,
                                                        long segmentEndMs,
                                                        String fallbackText) {
@@ -1691,10 +2001,14 @@ public class SubtitleGenerator {
                 String tokenText = token.optString("text", "");
                 long startMs = token.optLong("startMs", -1);
                 long endMs = token.optLong("endMs", -1);
-                if (startMs >= 0) {
+                if (timeMapper != null && startMs >= 0) {
+                    startMs = timeMapper.mapCompactMsToOriginalMs(startMs);
+                } else if (startMs >= 0) {
                     startMs += tokenOffsetMs;
                 }
-                if (endMs >= 0) {
+                if (timeMapper != null && endMs >= 0) {
+                    endMs = timeMapper.mapCompactMsToOriginalMs(endMs);
+                } else if (endMs >= 0) {
                     endMs += tokenOffsetMs;
                 }
                 double confidence = token.optDouble("confidence", 0.0);
@@ -1873,9 +2187,12 @@ public class SubtitleGenerator {
             int nextLength = currentText.length() == 0
                     ? wordText.length()
                     : currentText.length() + 1 + wordText.length();
+            boolean timeGapBoundary = !currentWords.isEmpty()
+                    && word.getStartMs() - currentWords.get(currentWords.size() - 1).getEndMs()
+                    > WHISPER_WORD_GAP_SPLIT_MS;
             boolean sentenceBoundary = currentText.length() > 0 && endsSentence(currentText.toString());
             boolean lengthBoundary = !keepSentencesTogether && nextLength > maxSubtitleLength;
-            if (!currentWords.isEmpty() && (lengthBoundary || sentenceBoundary)) {
+            if (!currentWords.isEmpty() && (timeGapBoundary || lengthBoundary || sentenceBoundary)) {
                 addSubtitleChunk(subtitles, currentWords, currentText.toString());
                 currentWords = new ArrayList<>();
                 currentText = new StringBuilder();
@@ -1966,5 +2283,124 @@ public class SubtitleGenerator {
             floats[i] = sample / 32768.0f;
         }
         return floats;
+    }
+
+    private static class SpeechWindow {
+        private final long startSample;
+        private long endSample;
+
+        private SpeechWindow(long startSample, long endSample) {
+            this.startSample = startSample;
+            this.endSample = endSample;
+        }
+    }
+
+    private static class WhisperVadBatch {
+        private final float[] audioData;
+        private final TimeMapper timeMapper;
+        private final long firstOriginalSample;
+
+        private WhisperVadBatch(float[] audioData, TimeMapper timeMapper, long firstOriginalSample) {
+            this.audioData = audioData;
+            this.timeMapper = timeMapper;
+            this.firstOriginalSample = firstOriginalSample;
+        }
+    }
+
+    private static class WhisperVadBatchBuilder {
+        private float[] audioData;
+        private int sampleCount;
+        private long firstOriginalSample = -1;
+        private final TimeMapper timeMapper = new TimeMapper();
+
+        private WhisperVadBatchBuilder(int initialCapacity) {
+            audioData = new float[Math.max(1, Math.min(initialCapacity, WHISPER_SAMPLE_RATE * 30))];
+        }
+
+        private boolean hasAudio() {
+            return sampleCount > 0;
+        }
+
+        private int sampleCount() {
+            return sampleCount;
+        }
+
+        private void append(float[] samples, long originalStartSample) {
+            if (samples == null || samples.length == 0) {
+                return;
+            }
+            if (firstOriginalSample < 0) {
+                firstOriginalSample = originalStartSample;
+            }
+            ensureCapacity(sampleCount + samples.length);
+            System.arraycopy(samples, 0, audioData, sampleCount, samples.length);
+            timeMapper.addRange(sampleCount, samples.length, originalStartSample);
+            sampleCount += samples.length;
+        }
+
+        private WhisperVadBatch build() {
+            return new WhisperVadBatch(Arrays.copyOf(audioData, sampleCount),
+                    timeMapper, firstOriginalSample < 0 ? 0 : firstOriginalSample);
+        }
+
+        private void ensureCapacity(int requiredCapacity) {
+            if (requiredCapacity <= audioData.length) {
+                return;
+            }
+            int newCapacity = audioData.length;
+            while (newCapacity < requiredCapacity) {
+                newCapacity *= 2;
+            }
+            audioData = Arrays.copyOf(audioData, newCapacity);
+        }
+    }
+
+    private static class TimeMapper {
+        private final List<TimeMapRange> ranges = new ArrayList<>();
+
+        private void addRange(long compactStartSample, long sampleCount, long originalStartSample) {
+            if (sampleCount <= 0) {
+                return;
+            }
+            ranges.add(new TimeMapRange(compactStartSample,
+                    compactStartSample + sampleCount,
+                    originalStartSample));
+        }
+
+        private long mapCompactMsToOriginalMs(long compactMs) {
+            long compactSample = compactMs * WHISPER_SAMPLE_RATE / 1000L;
+            return mapCompactSampleToOriginalSample(compactSample) * 1000L / WHISPER_SAMPLE_RATE;
+        }
+
+        private long mapCompactSampleToOriginalSample(long compactSample) {
+            if (ranges.isEmpty()) {
+                return compactSample;
+            }
+            for (TimeMapRange range : ranges) {
+                if (compactSample >= range.compactStartSample && compactSample < range.compactEndSample) {
+                    return range.originalStartSample + compactSample - range.compactStartSample;
+                }
+            }
+            TimeMapRange lastRange = ranges.get(ranges.size() - 1);
+            if (compactSample >= lastRange.compactEndSample) {
+                return lastRange.originalStartSample
+                        + lastRange.compactEndSample
+                        - lastRange.compactStartSample;
+            }
+            TimeMapRange firstRange = ranges.get(0);
+            return firstRange.originalStartSample;
+        }
+    }
+
+    private static class TimeMapRange {
+        private final long compactStartSample;
+        private final long compactEndSample;
+        private final long originalStartSample;
+
+        private TimeMapRange(long compactStartSample, long compactEndSample, long originalStartSample) {
+            this.compactStartSample = compactStartSample;
+            this.compactEndSample = compactEndSample;
+            this.originalStartSample = originalStartSample;
+        }
     }
 }

@@ -56,6 +56,7 @@ public class MainViewModel extends AndroidViewModel {
     private static final String KEY_SUBTITLE_MAX_LENGTH = "subtitle_max_length";
     private static final String KEY_KEEP_SENTENCES_TOGETHER = "keep_sentences_together";
     private static final String KEY_SUPPRESS_WHISPER_SDH = "suppress_whisper_sdh";
+    private static final String KEY_WHISPER_VAD_ENABLED = "whisper_vad_enabled";
     private static final String KEY_WHISPER_LANGUAGE = "whisper_language";
     private static final String KEY_TRANSLATE_SUBTITLES = "translate_subtitles";
     private static final String KEY_TRANSLATION_SOURCE_LANGUAGE = "translation_source_language";
@@ -97,6 +98,7 @@ public class MainViewModel extends AndroidViewModel {
     private final MutableLiveData<Integer> subtitleMaxLength = new MutableLiveData<>(SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH);
     private final MutableLiveData<Boolean> keepSentencesTogether = new MutableLiveData<>(SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER);
     private final MutableLiveData<Boolean> suppressWhisperSdh = new MutableLiveData<>(true);
+    private final MutableLiveData<Boolean> whisperVadEnabled = new MutableLiveData<>(true);
     private final MutableLiveData<String> whisperLanguage = new MutableLiveData<>("auto");
     private final MutableLiveData<Boolean> translateSubtitles = new MutableLiveData<>(false);
     private final MutableLiveData<String> translationSourceLanguage = new MutableLiveData<>("auto");
@@ -304,6 +306,7 @@ public class MainViewModel extends AndroidViewModel {
     public LiveData<Integer> getSubtitleMaxLength() { return subtitleMaxLength; }
     public LiveData<Boolean> getKeepSentencesTogether() { return keepSentencesTogether; }
     public LiveData<Boolean> getSuppressWhisperSdh() { return suppressWhisperSdh; }
+    public LiveData<Boolean> getWhisperVadEnabled() { return whisperVadEnabled; }
     public LiveData<String> getWhisperLanguage() { return whisperLanguage; }
     public LiveData<Boolean> getTranslateSubtitles() { return translateSubtitles; }
     public LiveData<String> getTranslationSourceLanguage() { return translationSourceLanguage; }
@@ -333,6 +336,9 @@ public class MainViewModel extends AndroidViewModel {
         boolean suppressSdh = settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true);
         suppressWhisperSdh.setValue(suppressSdh);
         subtitleGenerator.setSuppressWhisperSdh(suppressSdh);
+        boolean savedWhisperVadEnabled = settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, true);
+        whisperVadEnabled.setValue(savedWhisperVadEnabled);
+        subtitleGenerator.setWhisperVadEnabled(savedWhisperVadEnabled);
         String savedWhisperLanguage = settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto");
         whisperLanguage.setValue(savedWhisperLanguage);
         subtitleGenerator.setWhisperLanguage(savedWhisperLanguage);
@@ -382,6 +388,12 @@ public class MainViewModel extends AndroidViewModel {
         suppressWhisperSdh.setValue(suppress);
         subtitleGenerator.setSuppressWhisperSdh(suppress);
         settingsPrefs.edit().putBoolean(KEY_SUPPRESS_WHISPER_SDH, suppress).apply();
+    }
+
+    public void setWhisperVadEnabled(boolean enabled) {
+        whisperVadEnabled.setValue(enabled);
+        subtitleGenerator.setWhisperVadEnabled(enabled);
+        settingsPrefs.edit().putBoolean(KEY_WHISPER_VAD_ENABLED, enabled).apply();
     }
 
     public void setWhisperLanguage(String language) {
@@ -1083,6 +1095,7 @@ public class MainViewModel extends AndroidViewModel {
         subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));
+        subtitleGenerator.setWhisperVadEnabled(settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, true));
         subtitleGenerator.setWhisperLanguage(settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto"));
         subtitleGenerator.setTranslationSettings(
                 settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false),

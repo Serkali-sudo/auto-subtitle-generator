@@ -297,6 +297,10 @@ public class SettingsFragment extends Fragment {
             viewModel.setSuppressWhisperSdh(isChecked);
         });
 
+        binding.whisperVadSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            viewModel.setWhisperVadEnabled(isChecked);
+        });
+
         binding.translateSubtitlesSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
             viewModel.setTranslateSubtitles(isChecked);
             setTranslationControlsEnabled(isChecked);
@@ -349,6 +353,10 @@ public class SettingsFragment extends Fragment {
 
         viewModel.getSuppressWhisperSdh().observe(getViewLifecycleOwner(), suppress -> {
             binding.suppressWhisperSdhSwitch.setChecked(Boolean.TRUE.equals(suppress));
+        });
+
+        viewModel.getWhisperVadEnabled().observe(getViewLifecycleOwner(), enabled -> {
+            binding.whisperVadSwitch.setChecked(Boolean.TRUE.equals(enabled));
         });
 
         viewModel.getWhisperLanguage().observe(getViewLifecycleOwner(), language -> {

@@ -103,6 +103,14 @@
                 android:checked="true"
                 android:text="Remove Whisper SDH captions" />
 
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/whisperVadSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:checked="true"
+                android:text="Use VAD to skip silence for Whisper" />
+
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

@@ -10,12 +10,26 @@ import java.util.HashMap;
 import java.util.List;
 
 public final class WhisperCpuConfig {
+    private static final int PREFERRED_MIN_THREAD_COUNT = 4;
+    private static final int PREFERRED_MAX_THREAD_COUNT = 6;
+
     private WhisperCpuConfig() {
     }
 
-    // Always use at least 2 threads.
+    // Prefer big cores, but do not ask whisper.cpp for more workers than the CPU can run well.
     public static int getPreferredThreadCount() {
-        return Math.max(CpuInfo.getHighPerfCpuCount(), 2);
+        int availableProcessors = Math.max(1, Runtime.getRuntime().availableProcessors());
+        int highPerfCpuCount = CpuInfo.getHighPerfCpuCount();
+        int candidate = highPerfCpuCount > 0
+                ? highPerfCpuCount
+                : Math.min(PREFERRED_MIN_THREAD_COUNT, availableProcessors);
+
+        if (availableProcessors >= PREFERRED_MIN_THREAD_COUNT) {
+            candidate = Math.max(candidate, PREFERRED_MIN_THREAD_COUNT);
+        }
+
+        return Math.max(1, Math.min(candidate,
+                Math.min(availableProcessors, PREFERRED_MAX_THREAD_COUNT)));
     }
 }
 
@@ -116,7 +130,7 @@ class CpuInfo {
             }
         }
 
-        return count;
+        return count == 0 ? values.size() : count;
     }
 
     private int countKeepingMin(List<Integer> values) {

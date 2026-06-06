@@ -69,48 +69,80 @@ public class WhisperContext {
         return runOnExecutor(new Callable<String>() {
             @Override
             public String call() {
-                if (ptr == 0L) {
-                    throw new IllegalStateException("Whisper context has been released");
-                }
-
                 try {
-                    int numThreads = WhisperCpuConfig.getPreferredThreadCount();
-                    Log.d(LOG_TAG, "Selecting " + numThreads + " threads");
-
-                    detectedLanguage = null;
-                    WhisperLib.Companion.fullTranscribe(ptr, numThreads, data, language,
-                            maxSegmentLength, suppressNonSpeechTokens, callback);
-                    detectedLanguage = WhisperLib.Companion.getDetectedLanguage(ptr);
-
-                    int textCount = WhisperLib.Companion.getTextSegmentCount(ptr);
-                    StringBuilder builder = new StringBuilder();
-
-                    for (int i = 0; i < textCount; i++) {
-                        if (printTimestamp) {
-                            String textTimestamp =
-                                    "[" + toTimestamp(WhisperLib.Companion.getTextSegmentT0(ptr, i)) +
-                                            " --> " +
-                                            toTimestamp(WhisperLib.Companion.getTextSegmentT1(ptr, i)) +
-                                            "]";
-
-                            String textSegment = WhisperLib.Companion.getTextSegment(ptr, i);
-                            builder.append(textTimestamp)
-                                    .append(": ")
-                                    .append(textSegment)
-                                    .append("\n");
-                        } else {
-                            builder.append(WhisperLib.Companion.getTextSegment(ptr, i));
-                        }
-                    }
-
-                    return builder.toString();
-
+                    runFullTranscribe(data, language, maxSegmentLength, suppressNonSpeechTokens, callback);
+                    return buildTranscriptionText(printTimestamp);
                 } catch (Exception e) {
                     Log.e(LOG_TAG, "Error during transcription", e);
                     return "";
                 }
             }
         });
+    }
+
+    public void transcribeDataWithCallbacks(
+            final float[] data,
+            final String language,
+            final int maxSegmentLength,
+            final boolean suppressNonSpeechTokens,
+            final WhisperCallback callback
+    ) {
+        runOnExecutor(new Callable<Void>() {
+            @Override
+            public Void call() {
+                try {
+                    runFullTranscribe(data, language, maxSegmentLength, suppressNonSpeechTokens, callback);
+                } catch (Exception e) {
+                    Log.e(LOG_TAG, "Error during transcription", e);
+                }
+                return null;
+            }
+        });
+    }
+
+    private void runFullTranscribe(
+            float[] data,
+            String language,
+            int maxSegmentLength,
+            boolean suppressNonSpeechTokens,
+            WhisperCallback callback
+    ) {
+        if (ptr == 0L) {
+            throw new IllegalStateException("Whisper context has been released");
+        }
+
+        int numThreads = WhisperCpuConfig.getPreferredThreadCount();
+        Log.d(LOG_TAG, "Selecting " + numThreads + " threads");
+
+        detectedLanguage = null;
+        WhisperLib.Companion.fullTranscribe(ptr, numThreads, data, language,
+                maxSegmentLength, suppressNonSpeechTokens, callback);
+        detectedLanguage = WhisperLib.Companion.getDetectedLanguage(ptr);
+    }
+
+    private String buildTranscriptionText(boolean printTimestamp) {
+        int textCount = WhisperLib.Companion.getTextSegmentCount(ptr);
+        StringBuilder builder = new StringBuilder();
+
+        for (int i = 0; i < textCount; i++) {
+            if (printTimestamp) {
+                String textTimestamp =
+                        "[" + toTimestamp(WhisperLib.Companion.getTextSegmentT0(ptr, i)) +
+                                " --> " +
+                                toTimestamp(WhisperLib.Companion.getTextSegmentT1(ptr, i)) +
+                                "]";
+
+                String textSegment = WhisperLib.Companion.getTextSegment(ptr, i);
+                builder.append(textTimestamp)
+                        .append(": ")
+                        .append(textSegment)
+                        .append("\n");
+            } else {
+                builder.append(WhisperLib.Companion.getTextSegment(ptr, i));
+            }
+        }
+
+        return builder.toString();
     }
 
     public String getDetectedLanguage() {
