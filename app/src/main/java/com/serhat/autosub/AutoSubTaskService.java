@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -41,6 +42,7 @@ public class AutoSubTaskService extends Service {
     public static final String ACTION_CANCEL_DOWNLOAD = "com.serhat.autosub.CANCEL_DOWNLOAD";
 
     private static final int NOTIFICATION_ID = NotificationHelper.FOREGROUND_SERVICE_NOTIFICATION_ID;
+    private static final String MEDIA_WAKE_LOCK_TAG = "AutoSub:MediaProcessing";
     private static final String PREFS_SETTINGS = "autosub_settings";
     private static final String KEY_SHORTS_MODE_WORD_BY_WORD = "shorts_mode_word_by_word";
     private static final String KEY_BATCH_FORMAT = "batch_format";
@@ -87,6 +89,7 @@ public class AutoSubTaskService extends Service {
     private AutoSubTaskState currentState = AutoSubTaskState.idle(false, new ArrayList<>());
     private AutoSubTaskState latestDownloadState;
     private AutoSubTaskState latestMediaState;
+    private PowerManager.WakeLock mediaWakeLock;
 
     public class LocalBinder extends Binder {
         AutoSubTaskService getService() {
@@ -149,6 +152,7 @@ public class AutoSubTaskService extends Service {
         if (activeDownloadTask != null) {
             activeDownloadTask.cancel();
         }
+        releaseMediaWakeLock();
         subtitleGenerator.release();
         super.onDestroy();
     }
@@ -1072,6 +1076,7 @@ public class AutoSubTaskService extends Service {
         AutoSubTaskState foregroundState = foregroundStateForNotifications(state);
         updateForegroundNotification(foregroundState);
         updateSecondaryNotifications(foregroundState);
+        updateMediaWakeLock();
         for (Listener listener : new ArrayList<>(listeners)) {
             listener.onTaskStateChanged(state);
         }
@@ -1243,6 +1248,36 @@ public class AutoSubTaskService extends Service {
 
     private boolean isMediaLaneActive() {
         return queueRunning || batchRunning || isMediaTask(currentState.getTaskType());
+    }
+
+    private void updateMediaWakeLock() {
+        if (isMediaLaneActive()) {
+            acquireMediaWakeLock();
+        } else {
+            releaseMediaWakeLock();
+        }
+    }
+
+    private void acquireMediaWakeLock() {
+        if (mediaWakeLock != null && mediaWakeLock.isHeld()) {
+            return;
+        }
+
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        if (powerManager == null) {
+            return;
+        }
+
+        mediaWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, MEDIA_WAKE_LOCK_TAG);
+        mediaWakeLock.setReferenceCounted(false);
+        mediaWakeLock.acquire();
+    }
+
+    private void releaseMediaWakeLock() {
+        if (mediaWakeLock != null && mediaWakeLock.isHeld()) {
+            mediaWakeLock.release();
+        }
+        mediaWakeLock = null;
     }
 
     private PendingIntent serviceAction(String action, int requestCode) {

@@ -211,6 +211,7 @@ public class SubtitleGenerator {
                         }
                         loadedContext = WhisperContext.createContextFromFile(modelFile.getAbsolutePath());
                     }
+                    loadedContext.configureThreadTuning(context, modelInfo.getId());
 
                     synchronized (modelLock) {
                         if (sessionId != currentLoadSessionId) {

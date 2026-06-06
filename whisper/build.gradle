@@ -59,11 +59,7 @@ android {
             path = file("src/main/jni/whisper/CMakeLists.txt")
         }
     }
-    packagingOptions {
-        resources {
-            excludes += '/META-INF/{AL2.0,LGPL2.1}'
-        }
-    }
+
     ndkVersion '27.0.12077973'
 }
 

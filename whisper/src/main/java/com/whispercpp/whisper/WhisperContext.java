@@ -1,6 +1,7 @@
 package com.whispercpp.whisper;
 
 import android.content.res.AssetManager;
+import android.content.Context;
 import android.os.Build;
 import android.util.Log;
 
@@ -25,6 +26,11 @@ public class WhisperContext {
 
     private WhisperContext(long ptr) {
         this.ptr = ptr;
+    }
+
+    public void configureThreadTuning(Context context, String modelId) {
+        WhisperCpuConfig.configureThreadTuning(context, modelId,
+                WhisperLib.Companion.getLoadedLibraryName());
     }
 
     public void stopTranscription() {
@@ -115,9 +121,27 @@ public class WhisperContext {
         Log.d(LOG_TAG, "Selecting " + numThreads + " threads");
 
         detectedLanguage = null;
+        long startMs = System.currentTimeMillis();
         WhisperLib.Companion.fullTranscribe(ptr, numThreads, data, language,
                 maxSegmentLength, suppressNonSpeechTokens, callback);
+        long wallMs = System.currentTimeMillis() - startMs;
+        int audioSamples = data == null ? 0 : data.length;
+        logTranscriptionProfile(numThreads, audioSamples, wallMs);
+        WhisperCpuConfig.reportTranscriptionTiming(numThreads, audioSamples, wallMs);
         detectedLanguage = WhisperLib.Companion.getDetectedLanguage(ptr);
+    }
+
+    private void logTranscriptionProfile(int numThreads, int audioSamples, long wallMs) {
+        if (audioSamples <= 0 || wallMs <= 0) {
+            return;
+        }
+
+        double audioSeconds = audioSamples / 16000.0;
+        double wallSeconds = wallMs / 1000.0;
+        double realtimeFactor = wallSeconds / audioSeconds;
+        Log.i(LOG_TAG, String.format(Locale.US,
+                "Whisper profile: threads=%d, audio=%.2fs, wall=%.2fs, realtimeFactor=%.2fx",
+                numThreads, audioSeconds, wallSeconds, realtimeFactor));
     }
 
     private String buildTranscriptionText(boolean printTimestamp) {
@@ -315,12 +339,14 @@ class WhisperLib {
 
     public static class Companion {
         private static final String LOG_TAG = "LibWhisper";
+        private static String loadedLibraryName = "unknown";
 
         static {
             Log.d(LOG_TAG, "Primary ABI: " + Build.SUPPORTED_ABIS[0]);
 
             boolean loadVfpv4 = false;
             boolean loadV8fp16 = false;
+            boolean loadV8fp16Dotprod = false;
 
             if (isArmEabiV7a()) {
                 // armeabi-v7a needs runtime detection support
@@ -329,7 +355,7 @@ class WhisperLib {
                 if (cpuInfo != null) {
                     Log.d(LOG_TAG, "CPU info: " + cpuInfo);
 
-                    if (cpuInfo.contains("vfpv4")) {
+                    if (hasCpuFeature(cpuInfo, "vfpv4")) {
                         Log.d(LOG_TAG, "CPU supports vfpv4");
                         loadVfpv4 = true;
                     }
@@ -342,26 +368,37 @@ class WhisperLib {
                 if (cpuInfo != null) {
                     Log.d(LOG_TAG, "CPU info: " + cpuInfo);
 
-                    if (cpuInfo.contains("fphp")) {
+                    boolean supportsFp16Arithmetic = hasCpuFeature(cpuInfo, "fphp");
+                    boolean supportsDotprod = hasCpuFeature(cpuInfo, "asimddp")
+                            || hasCpuFeature(cpuInfo, "dotprod");
+
+                    if (supportsFp16Arithmetic) {
                         Log.d(LOG_TAG, "CPU supports fp16 arithmetic");
                         loadV8fp16 = true;
+                    }
+
+                    if (supportsFp16Arithmetic && supportsDotprod) {
+                        Log.d(LOG_TAG, "CPU supports fp16 arithmetic + dotprod");
+                        loadV8fp16Dotprod = true;
                     }
                 }
             }
 
-            if (loadVfpv4) {
-                Log.d(LOG_TAG, "Loading libwhisper_vfpv4.so");
-                System.loadLibrary("whisper_vfpv4");
-            } else if (loadV8fp16) {
-                Log.d(LOG_TAG, "Loading libwhisper_v8fp16_va.so");
-                System.loadLibrary("whisper_v8fp16_va");
-            } else {
-                Log.d(LOG_TAG, "Loading libwhisper.so");
-                System.loadLibrary("whisper");
+            boolean loaded = loadVfpv4 && tryLoadLibrary("whisper_vfpv4");
+            loaded = loaded || (loadV8fp16Dotprod && tryLoadLibrary("whisper_v8fp16_dotprod_va"));
+            loaded = loaded || (loadV8fp16 && tryLoadLibrary("whisper_v8fp16_va"));
+            loaded = loaded || tryLoadLibrary("whisper");
+
+            if (!loaded) {
+                throw new UnsatisfiedLinkError("Unable to load any Whisper native library");
             }
         }
 
         private Companion() {
+        }
+
+        public String getLoadedLibraryName() {
+            return loadedLibraryName;
         }
 
         // JNI methods
@@ -409,6 +446,26 @@ class WhisperLib {
 
         private static boolean isArmEabiV8a() {
             return Build.SUPPORTED_ABIS[0].equals("arm64-v8a");
+        }
+
+        private static boolean tryLoadLibrary(String libraryName) {
+            try {
+                Log.d(LOG_TAG, "Loading lib" + libraryName + ".so");
+                System.loadLibrary(libraryName);
+                loadedLibraryName = libraryName;
+                return true;
+            } catch (UnsatisfiedLinkError e) {
+                Log.w(LOG_TAG, "Couldn't load lib" + libraryName + ".so", e);
+                return false;
+            }
+        }
+
+        private static boolean hasCpuFeature(String cpuInfo, String feature) {
+            String normalizedCpuInfo = " " + cpuInfo.toLowerCase(Locale.US)
+                    .replace(':', ' ')
+                    .replace('\n', ' ')
+                    .replace('\t', ' ') + " ";
+            return normalizedCpuInfo.contains(" " + feature.toLowerCase(Locale.US) + " ");
         }
 
         private static String cpuInfo() {

@@ -1,5 +1,6 @@
 package com.serhat.autosub;
 
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -13,8 +14,8 @@ import androidx.core.content.ContextCompat;
 
 public final class NotificationHelper {
 
-    private static final String CHANNEL_ID = "autosub_progress_channel";
-    private static final String CHANNEL_NAME = "Background Tasks Progress";
+    private static final String CHANNEL_ID = "autosub_progress_channel_v2";
+    private static final String CHANNEL_NAME = "AutoSub Progress";
     private static final String CHANNEL_DESC = "Notifications showing progress of background tasks like exports and downloads.";
     public static final int FOREGROUND_SERVICE_NOTIFICATION_ID = 4001;
 
@@ -26,10 +27,13 @@ public final class NotificationHelper {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
                     CHANNEL_NAME,
-                    NotificationManager.IMPORTANCE_LOW
+                    NotificationManager.IMPORTANCE_DEFAULT
             );
             channel.setDescription(CHANNEL_DESC);
             channel.setShowBadge(false);
+            channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            channel.enableVibration(false);
+            channel.setSound(null, null);
 
             NotificationManager manager = context.getSystemService(NotificationManager.class);
             if (manager != null) {
@@ -46,7 +50,9 @@ public final class NotificationHelper {
                 .setSmallIcon(smallIcon)
                 .setContentTitle(title == null || title.trim().isEmpty() ? "AutoSub is working" : title)
                 .setContentText(content == null ? "" : content)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setAutoCancel(false);
@@ -119,8 +125,11 @@ public final class NotificationHelper {
                 .setSmallIcon(R.drawable.ri_download_line) // standard download/task icon
                 .setContentTitle(title)
                 .setContentText(content)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setOngoing(true)
+                .setOnlyAlertOnce(true)
                 .setAutoCancel(false)
                 .setContentIntent(pendingIntent);
 

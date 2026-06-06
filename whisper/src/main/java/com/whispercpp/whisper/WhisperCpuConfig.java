@@ -1,5 +1,8 @@
 package com.whispercpp.whisper;
 
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.Build;
 import android.util.Log;
 
 import java.io.BufferedReader;
@@ -10,14 +13,105 @@ import java.util.HashMap;
 import java.util.List;
 
 public final class WhisperCpuConfig {
+    private static final String LOG_TAG = "WhisperCpuConfig";
+    private static final String PREFS_NAME = "whisper_cpu_tuning";
+    private static final String KEY_THREAD_COUNT_PREFIX = "thread_count:";
+    private static final String TUNING_CACHE_VERSION = "v2";
     private static final int PREFERRED_MIN_THREAD_COUNT = 4;
     private static final int PREFERRED_MAX_THREAD_COUNT = 6;
+    private static final int MIN_TIMED_AUDIO_SAMPLES = 16000 * 8;
+    private static final double MIN_GAIN_FOR_MORE_THREADS = 1.05;
+
+    private static Context appContext;
+    private static String activeCacheKey;
+    private static int cachedThreadCount;
+    private static int[] trialThreadCounts = new int[0];
+    private static double[] trialThroughput = new double[0];
+    private static int trialIndex;
 
     private WhisperCpuConfig() {
     }
 
+    public static synchronized void configureThreadTuning(Context context, String modelId) {
+        configureThreadTuning(context, modelId, "unknown");
+    }
+
+    public static synchronized void configureThreadTuning(
+            Context context,
+            String modelId,
+            String nativeLibraryId
+    ) {
+        if (context == null) {
+            return;
+        }
+
+        appContext = context.getApplicationContext();
+        String nextCacheKey = buildCacheKey(modelId, nativeLibraryId);
+        if (nextCacheKey.equals(activeCacheKey)) {
+            return;
+        }
+
+        activeCacheKey = nextCacheKey;
+        cachedThreadCount = readCachedThreadCount(nextCacheKey);
+        trialThreadCounts = cachedThreadCount > 0
+                ? new int[0]
+                : buildTrialThreadCounts(computeHeuristicThreadCount());
+        trialThroughput = new double[trialThreadCounts.length];
+        trialIndex = 0;
+
+        if (cachedThreadCount > 0) {
+            Log.i(LOG_TAG, "Using cached Whisper thread count " + cachedThreadCount);
+        } else {
+            Log.i(LOG_TAG, "Starting Whisper thread auto-tune candidates: "
+                    + formatCandidates(trialThreadCounts));
+        }
+    }
+
     // Prefer big cores, but do not ask whisper.cpp for more workers than the CPU can run well.
-    public static int getPreferredThreadCount() {
+    public static synchronized int getPreferredThreadCount() {
+        if (cachedThreadCount > 0) {
+            return cachedThreadCount;
+        }
+        if (trialIndex < trialThreadCounts.length) {
+            return trialThreadCounts[trialIndex];
+        }
+        return computeHeuristicThreadCount();
+    }
+
+    public static synchronized void reportTranscriptionTiming(int threads, int audioSamples, long wallTimeMs) {
+        if (cachedThreadCount > 0
+                || activeCacheKey == null
+                || trialIndex >= trialThreadCounts.length
+                || threads != trialThreadCounts[trialIndex]
+                || audioSamples < MIN_TIMED_AUDIO_SAMPLES
+                || wallTimeMs <= 0) {
+            return;
+        }
+
+        double samplesPerMs = audioSamples / (double) wallTimeMs;
+        trialThroughput[trialIndex] = samplesPerMs;
+        Log.i(LOG_TAG, "Whisper thread auto-tune sample: threads=" + threads
+                + ", audioMs=" + (audioSamples * 1000L / 16000L)
+                + ", wallMs=" + wallTimeMs
+                + ", samplesPerMs=" + String.format(java.util.Locale.US, "%.2f", samplesPerMs));
+
+        trialIndex++;
+        if (trialIndex < trialThreadCounts.length) {
+            return;
+        }
+
+        int bestThreadCount = chooseBestThreadCount();
+        double bestThroughput = throughputForThreadCount(bestThreadCount);
+
+        if (bestThroughput > 0.0) {
+            cachedThreadCount = bestThreadCount;
+            writeCachedThreadCount(activeCacheKey, cachedThreadCount);
+            Log.i(LOG_TAG, "Cached Whisper thread count " + cachedThreadCount
+                    + " for " + activeCacheKey);
+        }
+    }
+
+    private static int computeHeuristicThreadCount() {
         int availableProcessors = Math.max(1, Runtime.getRuntime().availableProcessors());
         int highPerfCpuCount = CpuInfo.getHighPerfCpuCount();
         int candidate = highPerfCpuCount > 0
@@ -30,6 +124,110 @@ public final class WhisperCpuConfig {
 
         return Math.max(1, Math.min(candidate,
                 Math.min(availableProcessors, PREFERRED_MAX_THREAD_COUNT)));
+    }
+
+    private static String buildCacheKey(String modelId, String nativeLibraryId) {
+        String abi = Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "unknown";
+        String normalizedModelId = modelId == null || modelId.trim().isEmpty()
+                ? "unknown"
+                : modelId.trim();
+        String normalizedNativeLibraryId = nativeLibraryId == null || nativeLibraryId.trim().isEmpty()
+                ? "unknown"
+                : nativeLibraryId.trim();
+        return TUNING_CACHE_VERSION + "|" + Build.FINGERPRINT + "|" + abi + "|" + normalizedNativeLibraryId
+                + "|" + normalizedModelId;
+    }
+
+    private static int readCachedThreadCount(String cacheKey) {
+        if (appContext == null || cacheKey == null) {
+            return 0;
+        }
+        int cached = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getInt(KEY_THREAD_COUNT_PREFIX + cacheKey, 0);
+        int maxThreads = Math.min(Math.max(1, Runtime.getRuntime().availableProcessors()),
+                PREFERRED_MAX_THREAD_COUNT);
+        return cached >= 1 && cached <= maxThreads ? cached : 0;
+    }
+
+    private static void writeCachedThreadCount(String cacheKey, int threadCount) {
+        if (appContext == null || cacheKey == null || threadCount <= 0) {
+            return;
+        }
+        SharedPreferences preferences = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        preferences.edit().putInt(KEY_THREAD_COUNT_PREFIX + cacheKey, threadCount).apply();
+    }
+
+    private static int[] buildTrialThreadCounts(int heuristic) {
+        int maxThreads = Math.min(Math.max(1, Runtime.getRuntime().availableProcessors()),
+                PREFERRED_MAX_THREAD_COUNT);
+        int[] rawCandidates = {
+                heuristic,
+                heuristic > 1 ? heuristic - 1 : heuristic,
+                heuristic < maxThreads ? heuristic + 1 : heuristic,
+                Math.min(PREFERRED_MIN_THREAD_COUNT, maxThreads)
+        };
+
+        List<Integer> unique = new ArrayList<>();
+        for (int candidate : rawCandidates) {
+            int bounded = Math.max(1, Math.min(candidate, maxThreads));
+            if (!unique.contains(bounded)) {
+                unique.add(bounded);
+            }
+        }
+
+        int[] result = new int[unique.size()];
+        for (int i = 0; i < unique.size(); i++) {
+            result[i] = unique.get(i);
+        }
+        return result;
+    }
+
+    private static int chooseBestThreadCount() {
+        int bestThreadCount = trialThreadCounts[0];
+        double bestThroughput = trialThroughput[0];
+        for (int i = 1; i < trialThreadCounts.length; i++) {
+            if (trialThroughput[i] > bestThroughput) {
+                bestThroughput = trialThroughput[i];
+                bestThreadCount = trialThreadCounts[i];
+            }
+        }
+
+        for (int i = 0; i < trialThreadCounts.length; i++) {
+            int lowerThreadCount = trialThreadCounts[i];
+            double lowerThroughput = trialThroughput[i];
+            if (lowerThreadCount >= bestThreadCount || lowerThroughput <= 0.0) {
+                continue;
+            }
+            if (bestThroughput < lowerThroughput * MIN_GAIN_FOR_MORE_THREADS) {
+                bestThreadCount = lowerThreadCount;
+                bestThroughput = lowerThroughput;
+            }
+        }
+
+        return bestThreadCount;
+    }
+
+    private static double throughputForThreadCount(int threadCount) {
+        for (int i = 0; i < trialThreadCounts.length; i++) {
+            if (trialThreadCounts[i] == threadCount) {
+                return trialThroughput[i];
+            }
+        }
+        return 0.0;
+    }
+
+    private static String formatCandidates(int[] candidates) {
+        if (candidates == null || candidates.length == 0) {
+            return "[]";
+        }
+        StringBuilder builder = new StringBuilder("[");
+        for (int i = 0; i < candidates.length; i++) {
+            if (i > 0) {
+                builder.append(", ");
+            }
+            builder.append(candidates[i]);
+        }
+        return builder.append(']').toString();
     }
 }
 
