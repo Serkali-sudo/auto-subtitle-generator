@@ -58,10 +58,13 @@ public class SubtitleGenerator {
     private static final int WHISPER_SAMPLE_RATE = 16000;
     private static final int WHISPER_CHUNK_SECONDS = 180;
     private static final int WHISPER_VAD_BATCH_SECONDS = 600;
-    private static final int VAD_FRAME_SAMPLES = 320;
-    private static final int VAD_FRAME_BYTES = VAD_FRAME_SAMPLES * 2;
+    private static final int WEBRTC_VAD_FRAME_SAMPLES = 320;
+    private static final int SILERO_VAD_FRAME_SAMPLES = 1536;
+    private static final int YAMNET_VAD_FRAME_SAMPLES = 975;
     private static final int VAD_SPEECH_DURATION_MS = 50;
     private static final int VAD_SILENCE_DURATION_MS = 300;
+    private static final int YAMNET_VAD_SPEECH_DURATION_MS = 30;
+    private static final int YAMNET_VAD_SILENCE_DURATION_MS = 30;
     private static final int VAD_PADDING_MS = 250;
     private static final int VAD_MERGE_GAP_MS = 750;
     private static final long WHISPER_WORD_GAP_SPLIT_MS = 1200;
@@ -70,15 +73,27 @@ public class SubtitleGenerator {
     public static final int PROGRESS_PREPARING_AUDIO = -2;
     public static final int PROGRESS_DETECTING_LANGUAGE = -3;
     public static final int PROGRESS_TRANSLATING = -4;
+    public static final int PROGRESS_SCANNING_SPEECH = -5;
     public static final int DEFAULT_MAX_SUBTITLE_LENGTH = 42;
     public static final int MIN_SUBTITLE_LENGTH = 24;
     public static final int MAX_SUBTITLE_LENGTH_LIMIT = 96;
     public static final boolean DEFAULT_KEEP_SENTENCES_TOGETHER = true;
+    public static final String VAD_MODEL_WEBRTC = "webrtc";
+    public static final String VAD_MODEL_SILERO = "silero";
+    public static final String VAD_MODEL_YAMNET = "yamnet";
+    public static final String VAD_AGGRESSIVENESS_NORMAL = "normal";
+    public static final String VAD_AGGRESSIVENESS_AGGRESSIVE = "aggressive";
+    public static final String VAD_AGGRESSIVENESS_VERY_AGGRESSIVE = "very_aggressive";
     public enum SubtitleLayerMode {
         ORIGINAL,
         TRANSLATION,
         DOUBLE
     }
+
+    public static boolean isScanningSpeechProgress(int progress) {
+        return progress == PROGRESS_SCANNING_SPEECH;
+    }
+
     private final Context context;
     private volatile Model model;
     private volatile WhisperContext whisperContext;
@@ -93,6 +108,8 @@ public class SubtitleGenerator {
     private volatile boolean keepSentencesTogether = DEFAULT_KEEP_SENTENCES_TOGETHER;
     private volatile boolean suppressWhisperSdh = true;
     private volatile boolean whisperVadEnabled = true;
+    private volatile String whisperVadModel = VAD_MODEL_WEBRTC;
+    private volatile String whisperVadAggressiveness = VAD_AGGRESSIVENESS_NORMAL;
     private volatile String whisperLanguage = "auto";
     private volatile String lastTranscriptionLanguage = null;
     private volatile boolean translationEnabled = false;
@@ -118,6 +135,14 @@ public class SubtitleGenerator {
 
     public void setWhisperVadEnabled(boolean whisperVadEnabled) {
         this.whisperVadEnabled = whisperVadEnabled;
+    }
+
+    public void setWhisperVadModel(String whisperVadModel) {
+        this.whisperVadModel = normalizeVadModel(whisperVadModel);
+    }
+
+    public void setWhisperVadAggressiveness(String whisperVadAggressiveness) {
+        this.whisperVadAggressiveness = normalizeVadAggressiveness(whisperVadAggressiveness);
     }
 
     public void setWhisperLanguage(String whisperLanguage) {
@@ -1619,13 +1644,19 @@ public class SubtitleGenerator {
         }
 
         long vadStartMs = System.currentTimeMillis();
-        List<SpeechWindow> speechWindows = detectSpeechWindows(audioFile, totalSamples);
+        String activeVadModel = normalizeVadModel(whisperVadModel);
+        String activeVadAggressiveness = normalizeVadAggressiveness(whisperVadAggressiveness);
+        callback.onProgressUpdate(PROGRESS_SCANNING_SPEECH);
+        List<SpeechWindow> speechWindows = detectSpeechWindows(audioFile, totalSamples,
+                activeVadModel, activeVadAggressiveness);
         List<WhisperVadBatch> vadBatches = buildWhisperVadBatches(audioFile, speechWindows, maxVadBatchSamples);
         long vadWallMs = System.currentTimeMillis() - vadStartMs;
         long speechSamples = sumSpeechWindowSamples(speechWindows);
         long skippedSamples = Math.max(0, totalSamples - speechSamples);
         double skippedPercent = totalSamples > 0 ? skippedSamples * 100.0 / totalSamples : 0.0;
-        Log.i(TAG, "Whisper VAD scan: windows=" + speechWindows.size()
+        Log.i(TAG, "Whisper VAD scan: model=" + activeVadModel
+                + ", aggressiveness=" + activeVadAggressiveness
+                + ", windows=" + speechWindows.size()
                 + ", batches=" + vadBatches.size()
                 + ", totalAudio=" + formatDurationForLog(samplesToMs(totalSamples))
                 + ", whisperInput=" + formatDurationForLog(samplesToMs(speechSamples))
@@ -1665,7 +1696,9 @@ public class SubtitleGenerator {
         }
 
         long totalWallMs = System.currentTimeMillis() - whisperPipelineStartMs;
-        Log.i(TAG, "Whisper VAD result: whisperInput="
+        Log.i(TAG, "Whisper VAD result: model=" + activeVadModel
+                + ", aggressiveness=" + activeVadAggressiveness
+                + ", whisperInput="
                 + formatDurationForLog(samplesToMs(whisperInputSamples))
                 + ", skipped=" + formatDurationForLog(samplesToMs(Math.max(0, totalSamples - whisperInputSamples)))
                 + " (" + String.format(Locale.US, "%.1f", totalSamples > 0
@@ -1732,7 +1765,72 @@ public class SubtitleGenerator {
         return String.format(Locale.US, "%d:%02d.%03d", minutes, seconds, milliseconds);
     }
 
-    private List<SpeechWindow> detectSpeechWindows(File audioFile, long totalSamples) throws IOException {
+    private List<SpeechWindow> detectSpeechWindows(File audioFile,
+                                                   long totalSamples,
+                                                   String vadModel,
+                                                   String vadAggressiveness) throws IOException {
+        if (VAD_MODEL_SILERO.equals(vadModel)) {
+            return detectSpeechWindowsWithSilero(audioFile, totalSamples, vadAggressiveness);
+        }
+        if (VAD_MODEL_YAMNET.equals(vadModel)) {
+            return detectSpeechWindowsWithYamnet(audioFile, totalSamples, vadAggressiveness);
+        }
+        return detectSpeechWindowsWithWebRtc(audioFile, totalSamples, vadAggressiveness);
+    }
+
+    private String normalizeVadModel(String vadModel) {
+        if (VAD_MODEL_SILERO.equalsIgnoreCase(vadModel)) {
+            return VAD_MODEL_SILERO;
+        }
+        if (VAD_MODEL_YAMNET.equalsIgnoreCase(vadModel)) {
+            return VAD_MODEL_YAMNET;
+        }
+        return VAD_MODEL_WEBRTC;
+    }
+
+    private String normalizeVadAggressiveness(String aggressiveness) {
+        if (VAD_AGGRESSIVENESS_NORMAL.equalsIgnoreCase(aggressiveness)) {
+            return VAD_AGGRESSIVENESS_NORMAL;
+        }
+        if (VAD_AGGRESSIVENESS_AGGRESSIVE.equalsIgnoreCase(aggressiveness)) {
+            return VAD_AGGRESSIVENESS_AGGRESSIVE;
+        }
+        return VAD_AGGRESSIVENESS_VERY_AGGRESSIVE;
+    }
+
+    private Mode toWebRtcVadMode(String aggressiveness) {
+        if (VAD_AGGRESSIVENESS_NORMAL.equals(aggressiveness)) {
+            return Mode.NORMAL;
+        }
+        if (VAD_AGGRESSIVENESS_AGGRESSIVE.equals(aggressiveness)) {
+            return Mode.AGGRESSIVE;
+        }
+        return Mode.VERY_AGGRESSIVE;
+    }
+
+    private com.konovalov.vad.silero.config.Mode toSileroVadMode(String aggressiveness) {
+        if (VAD_AGGRESSIVENESS_NORMAL.equals(aggressiveness)) {
+            return com.konovalov.vad.silero.config.Mode.NORMAL;
+        }
+        if (VAD_AGGRESSIVENESS_AGGRESSIVE.equals(aggressiveness)) {
+            return com.konovalov.vad.silero.config.Mode.AGGRESSIVE;
+        }
+        return com.konovalov.vad.silero.config.Mode.VERY_AGGRESSIVE;
+    }
+
+    private com.konovalov.vad.yamnet.config.Mode toYamnetVadMode(String aggressiveness) {
+        if (VAD_AGGRESSIVENESS_NORMAL.equals(aggressiveness)) {
+            return com.konovalov.vad.yamnet.config.Mode.NORMAL;
+        }
+        if (VAD_AGGRESSIVENESS_AGGRESSIVE.equals(aggressiveness)) {
+            return com.konovalov.vad.yamnet.config.Mode.AGGRESSIVE;
+        }
+        return com.konovalov.vad.yamnet.config.Mode.VERY_AGGRESSIVE;
+    }
+
+    private List<SpeechWindow> detectSpeechWindowsWithWebRtc(File audioFile,
+                                                             long totalSamples,
+                                                             String vadAggressiveness) throws IOException {
         List<SpeechWindow> windows = new ArrayList<>();
         if (totalSamples <= 0) {
             return windows;
@@ -1741,7 +1839,7 @@ public class SubtitleGenerator {
         VadWebRTC vad = Vad.builder()
                 .setSampleRate(SampleRate.SAMPLE_RATE_16K)
                 .setFrameSize(FrameSize.FRAME_SIZE_320)
-                .setMode(Mode.VERY_AGGRESSIVE)
+                .setMode(toWebRtcVadMode(vadAggressiveness))
                 .setSpeechDurationMs(VAD_SPEECH_DURATION_MS)
                 .setSilenceDurationMs(VAD_SILENCE_DURATION_MS)
                 .build();
@@ -1750,23 +1848,24 @@ public class SubtitleGenerator {
         long currentSpeechStartSample = -1;
         long currentSpeechEndSample = -1;
         long frameStartSample = 0;
+        int frameBytes = WEBRTC_VAD_FRAME_SAMPLES * 2;
 
         try (FileInputStream inputStream = new FileInputStream(audioFile)) {
             skipFully(inputStream, WAV_HEADER_BYTES);
-            byte[] frame = new byte[VAD_FRAME_BYTES];
+            byte[] frame = new byte[frameBytes];
 
             while (!isCancelled && frameStartSample < totalSamples) {
                 int bytesRead = readFrame(inputStream, frame);
                 if (bytesRead <= 0) {
                     break;
                 }
-                if (bytesRead < VAD_FRAME_BYTES) {
-                    for (int i = bytesRead; i < VAD_FRAME_BYTES; i++) {
+                if (bytesRead < frameBytes) {
+                    for (int i = bytesRead; i < frameBytes; i++) {
                         frame[i] = 0;
                     }
                 }
 
-                long actualFrameSamples = Math.min(VAD_FRAME_SAMPLES, totalSamples - frameStartSample);
+                long actualFrameSamples = Math.min(WEBRTC_VAD_FRAME_SAMPLES, totalSamples - frameStartSample);
                 boolean isSpeech = vad.isSpeech(frame);
                 if (isSpeech) {
                     if (currentSpeechStartSample < 0) {
@@ -1787,6 +1886,149 @@ public class SubtitleGenerator {
                 vad.close();
             } catch (Throwable e) {
                 Log.w(TAG, "Error closing WebRTC VAD", e);
+            }
+        }
+
+        if (currentSpeechStartSample >= 0) {
+            appendSpeechWindow(windows, currentSpeechStartSample, currentSpeechEndSample, totalSamples);
+        }
+        return windows;
+    }
+
+    private List<SpeechWindow> detectSpeechWindowsWithSilero(File audioFile,
+                                                             long totalSamples,
+                                                             String vadAggressiveness) throws IOException {
+        List<SpeechWindow> windows = new ArrayList<>();
+        if (totalSamples <= 0) {
+            return windows;
+        }
+
+        com.konovalov.vad.silero.VadSilero vad = com.konovalov.vad.silero.Vad.builder()
+                .setContext(context)
+                .setSampleRate(com.konovalov.vad.silero.config.SampleRate.SAMPLE_RATE_16K)
+                .setFrameSize(com.konovalov.vad.silero.config.FrameSize.FRAME_SIZE_1536)
+                .setMode(toSileroVadMode(vadAggressiveness))
+                .setSpeechDurationMs(VAD_SPEECH_DURATION_MS)
+                .setSilenceDurationMs(VAD_SILENCE_DURATION_MS)
+                .build();
+
+        long paddingSamples = msToSamples(VAD_PADDING_MS);
+        long currentSpeechStartSample = -1;
+        long currentSpeechEndSample = -1;
+        long frameStartSample = 0;
+        int frameBytes = SILERO_VAD_FRAME_SAMPLES * 2;
+
+        try (FileInputStream inputStream = new FileInputStream(audioFile)) {
+            skipFully(inputStream, WAV_HEADER_BYTES);
+            byte[] frame = new byte[frameBytes];
+            float[] floatFrame = new float[SILERO_VAD_FRAME_SAMPLES];
+
+            while (!isCancelled && frameStartSample < totalSamples) {
+                int bytesRead = readFrame(inputStream, frame);
+                if (bytesRead <= 0) {
+                    break;
+                }
+                if (bytesRead < frameBytes) {
+                    for (int i = bytesRead; i < frameBytes; i++) {
+                        frame[i] = 0;
+                    }
+                }
+
+                long actualFrameSamples = Math.min(SILERO_VAD_FRAME_SAMPLES, totalSamples - frameStartSample);
+                fillPcm16LeFloatFrame(frame, floatFrame);
+                boolean isSpeech = vad.isSpeech(floatFrame);
+                if (isSpeech) {
+                    if (currentSpeechStartSample < 0) {
+                        currentSpeechStartSample = Math.max(0, frameStartSample - paddingSamples);
+                    }
+                    currentSpeechEndSample = Math.min(totalSamples,
+                            frameStartSample + actualFrameSamples + paddingSamples);
+                } else if (currentSpeechStartSample >= 0) {
+                    appendSpeechWindow(windows, currentSpeechStartSample, currentSpeechEndSample, totalSamples);
+                    currentSpeechStartSample = -1;
+                    currentSpeechEndSample = -1;
+                }
+
+                frameStartSample += actualFrameSamples;
+            }
+        } finally {
+            try {
+                vad.close();
+            } catch (Throwable e) {
+                Log.w(TAG, "Error closing Silero VAD", e);
+            }
+        }
+
+        if (currentSpeechStartSample >= 0) {
+            appendSpeechWindow(windows, currentSpeechStartSample, currentSpeechEndSample, totalSamples);
+        }
+        return windows;
+    }
+
+    private List<SpeechWindow> detectSpeechWindowsWithYamnet(File audioFile,
+                                                             long totalSamples,
+                                                             String vadAggressiveness) throws IOException {
+        List<SpeechWindow> windows = new ArrayList<>();
+        if (totalSamples <= 0) {
+            return windows;
+        }
+
+        com.konovalov.vad.yamnet.VadYamnet vad = com.konovalov.vad.yamnet.Vad.builder()
+                .setContext(context)
+                .setSampleRate(com.konovalov.vad.yamnet.config.SampleRate.SAMPLE_RATE_16K)
+                .setFrameSize(com.konovalov.vad.yamnet.config.FrameSize.FRAME_SIZE_975)
+                .setMode(toYamnetVadMode(vadAggressiveness))
+                .setSpeechDurationMs(YAMNET_VAD_SPEECH_DURATION_MS)
+                .setSilenceDurationMs(YAMNET_VAD_SILENCE_DURATION_MS)
+                .build();
+
+        long paddingSamples = msToSamples(VAD_PADDING_MS);
+        long currentSpeechStartSample = -1;
+        long currentSpeechEndSample = -1;
+        long frameStartSample = 0;
+        int frameBytes = YAMNET_VAD_FRAME_SAMPLES * 2;
+
+        try (FileInputStream inputStream = new FileInputStream(audioFile)) {
+            skipFully(inputStream, WAV_HEADER_BYTES);
+            byte[] frame = new byte[frameBytes];
+            float[] floatFrame = new float[YAMNET_VAD_FRAME_SAMPLES];
+
+            while (!isCancelled && frameStartSample < totalSamples) {
+                int bytesRead = readFrame(inputStream, frame);
+                if (bytesRead <= 0) {
+                    break;
+                }
+                if (bytesRead < frameBytes) {
+                    for (int i = bytesRead; i < frameBytes; i++) {
+                        frame[i] = 0;
+                    }
+                }
+
+                long actualFrameSamples = Math.min(YAMNET_VAD_FRAME_SAMPLES, totalSamples - frameStartSample);
+                fillPcm16LeFloatFrame(frame, floatFrame);
+                com.konovalov.vad.yamnet.SoundCategory speechCategory =
+                        vad.classifyAudio("Speech", floatFrame);
+                boolean isSpeech = speechCategory != null
+                        && "Speech".equals(speechCategory.getLabel());
+                if (isSpeech) {
+                    if (currentSpeechStartSample < 0) {
+                        currentSpeechStartSample = Math.max(0, frameStartSample - paddingSamples);
+                    }
+                    currentSpeechEndSample = Math.min(totalSamples,
+                            frameStartSample + actualFrameSamples + paddingSamples);
+                } else if (currentSpeechStartSample >= 0) {
+                    appendSpeechWindow(windows, currentSpeechStartSample, currentSpeechEndSample, totalSamples);
+                    currentSpeechStartSample = -1;
+                    currentSpeechEndSample = -1;
+                }
+
+                frameStartSample += actualFrameSamples;
+            }
+        } finally {
+            try {
+                vad.close();
+            } catch (Throwable e) {
+                Log.w(TAG, "Error closing Yamnet VAD", e);
             }
         }
 
@@ -1829,6 +2071,18 @@ public class SubtitleGenerator {
             totalRead += read;
         }
         return totalRead;
+    }
+
+    private void fillPcm16LeFloatFrame(byte[] pcmFrame, float[] floatFrame) {
+        int samples = Math.min(floatFrame.length, pcmFrame.length / 2);
+        for (int i = 0; i < samples; i++) {
+            int sampleIndex = i * 2;
+            short sample = (short) ((pcmFrame[sampleIndex] & 0xFF) | (pcmFrame[sampleIndex + 1] << 8));
+            floatFrame[i] = sample / 32768.0f;
+        }
+        for (int i = samples; i < floatFrame.length; i++) {
+            floatFrame[i] = 0.0f;
+        }
     }
 
     private void skipFully(FileInputStream inputStream, long bytesToSkip) throws IOException {

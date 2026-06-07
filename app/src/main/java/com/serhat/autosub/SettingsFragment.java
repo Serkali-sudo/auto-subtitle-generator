@@ -20,8 +20,34 @@ public class SettingsFragment extends Fragment {
     private MainViewModel viewModel;
     private boolean syncingExportLocation;
     private boolean syncingWhisperLanguage;
+    private boolean syncingWhisperVadModel;
+    private boolean syncingWhisperVadAggressiveness;
     private boolean syncingTranslationSourceLanguage;
     private boolean syncingTranslationTargetLanguage;
+
+    private static final String[] WHISPER_VAD_MODEL_LABELS = {
+            "WebRTC",
+            "Silero",
+            "Yamnet"
+    };
+
+    private static final String[] WHISPER_VAD_MODEL_VALUES = {
+            SubtitleGenerator.VAD_MODEL_WEBRTC,
+            SubtitleGenerator.VAD_MODEL_SILERO,
+            SubtitleGenerator.VAD_MODEL_YAMNET
+    };
+
+    private static final String[] WHISPER_VAD_AGGRESSIVENESS_LABELS = {
+            "Normal",
+            "Aggressive",
+            "Very aggressive"
+    };
+
+    private static final String[] WHISPER_VAD_AGGRESSIVENESS_VALUES = {
+            SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL,
+            SubtitleGenerator.VAD_AGGRESSIVENESS_AGGRESSIVE,
+            SubtitleGenerator.VAD_AGGRESSIVENESS_VERY_AGGRESSIVE
+    };
 
     private static final String[] WHISPER_LANGUAGE_LABELS = {
             "Auto detect",
@@ -299,6 +325,52 @@ public class SettingsFragment extends Fragment {
 
         binding.whisperVadSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
             viewModel.setWhisperVadEnabled(isChecked);
+            binding.whisperVadModelSpinner.setEnabled(isChecked);
+            binding.whisperVadModelLabelTV.setEnabled(isChecked);
+            binding.whisperVadModelLabelTV.setAlpha(isChecked ? 0.75f : 0.38f);
+            binding.whisperVadAggressivenessSpinner.setEnabled(isChecked);
+            binding.whisperVadAggressivenessLabelTV.setEnabled(isChecked);
+            binding.whisperVadAggressivenessLabelTV.setAlpha(isChecked ? 0.75f : 0.38f);
+        });
+
+        ArrayAdapter<String> whisperVadModelAdapter = new ArrayAdapter<>(
+                requireContext(),
+                android.R.layout.simple_spinner_item,
+                WHISPER_VAD_MODEL_LABELS);
+        whisperVadModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        binding.whisperVadModelSpinner.setAdapter(whisperVadModelAdapter);
+        binding.whisperVadModelSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (!syncingWhisperVadModel && position >= 0 && position < WHISPER_VAD_MODEL_VALUES.length) {
+                    viewModel.setWhisperVadModel(WHISPER_VAD_MODEL_VALUES[position]);
+                }
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+
+        ArrayAdapter<String> whisperVadAggressivenessAdapter = new ArrayAdapter<>(
+                requireContext(),
+                android.R.layout.simple_spinner_item,
+                WHISPER_VAD_AGGRESSIVENESS_LABELS);
+        whisperVadAggressivenessAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        binding.whisperVadAggressivenessSpinner.setAdapter(whisperVadAggressivenessAdapter);
+        binding.whisperVadAggressivenessSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (!syncingWhisperVadAggressiveness
+                        && position >= 0
+                        && position < WHISPER_VAD_AGGRESSIVENESS_VALUES.length) {
+                    viewModel.setWhisperVadAggressiveness(WHISPER_VAD_AGGRESSIVENESS_VALUES[position]);
+                }
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
         });
 
         binding.translateSubtitlesSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -356,7 +428,26 @@ public class SettingsFragment extends Fragment {
         });
 
         viewModel.getWhisperVadEnabled().observe(getViewLifecycleOwner(), enabled -> {
-            binding.whisperVadSwitch.setChecked(Boolean.TRUE.equals(enabled));
+            boolean checked = Boolean.TRUE.equals(enabled);
+            binding.whisperVadSwitch.setChecked(checked);
+            binding.whisperVadModelSpinner.setEnabled(checked);
+            binding.whisperVadModelLabelTV.setEnabled(checked);
+            binding.whisperVadModelLabelTV.setAlpha(checked ? 0.75f : 0.38f);
+            binding.whisperVadAggressivenessSpinner.setEnabled(checked);
+            binding.whisperVadAggressivenessLabelTV.setEnabled(checked);
+            binding.whisperVadAggressivenessLabelTV.setAlpha(checked ? 0.75f : 0.38f);
+        });
+
+        viewModel.getWhisperVadModel().observe(getViewLifecycleOwner(), model -> {
+            syncingWhisperVadModel = true;
+            binding.whisperVadModelSpinner.setSelection(indexOfVadModel(model));
+            syncingWhisperVadModel = false;
+        });
+
+        viewModel.getWhisperVadAggressiveness().observe(getViewLifecycleOwner(), aggressiveness -> {
+            syncingWhisperVadAggressiveness = true;
+            binding.whisperVadAggressivenessSpinner.setSelection(indexOfVadAggressiveness(aggressiveness));
+            syncingWhisperVadAggressiveness = false;
         });
 
         viewModel.getWhisperLanguage().observe(getViewLifecycleOwner(), language -> {
@@ -390,6 +481,28 @@ public class SettingsFragment extends Fragment {
         String normalizedLanguage = language == null ? "auto" : language;
         for (int i = 0; i < WHISPER_LANGUAGE_CODES.length; i++) {
             if (WHISPER_LANGUAGE_CODES[i].equalsIgnoreCase(normalizedLanguage)) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private int indexOfVadModel(String model) {
+        String normalizedModel = model == null ? SubtitleGenerator.VAD_MODEL_WEBRTC : model;
+        for (int i = 0; i < WHISPER_VAD_MODEL_VALUES.length; i++) {
+            if (WHISPER_VAD_MODEL_VALUES[i].equalsIgnoreCase(normalizedModel)) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private int indexOfVadAggressiveness(String aggressiveness) {
+        String normalizedAggressiveness = aggressiveness == null
+                ? SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL
+                : aggressiveness;
+        for (int i = 0; i < WHISPER_VAD_AGGRESSIVENESS_VALUES.length; i++) {
+            if (WHISPER_VAD_AGGRESSIVENESS_VALUES[i].equalsIgnoreCase(normalizedAggressiveness)) {
                 return i;
             }
         }

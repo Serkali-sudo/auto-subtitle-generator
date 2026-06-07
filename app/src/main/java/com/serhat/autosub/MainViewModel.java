@@ -57,6 +57,8 @@ public class MainViewModel extends AndroidViewModel {
     private static final String KEY_KEEP_SENTENCES_TOGETHER = "keep_sentences_together";
     private static final String KEY_SUPPRESS_WHISPER_SDH = "suppress_whisper_sdh";
     private static final String KEY_WHISPER_VAD_ENABLED = "whisper_vad_enabled";
+    private static final String KEY_WHISPER_VAD_MODEL = "whisper_vad_model";
+    private static final String KEY_WHISPER_VAD_AGGRESSIVENESS = "whisper_vad_aggressiveness";
     private static final String KEY_WHISPER_LANGUAGE = "whisper_language";
     private static final String KEY_TRANSLATE_SUBTITLES = "translate_subtitles";
     private static final String KEY_TRANSLATION_SOURCE_LANGUAGE = "translation_source_language";
@@ -99,6 +101,9 @@ public class MainViewModel extends AndroidViewModel {
     private final MutableLiveData<Boolean> keepSentencesTogether = new MutableLiveData<>(SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER);
     private final MutableLiveData<Boolean> suppressWhisperSdh = new MutableLiveData<>(true);
     private final MutableLiveData<Boolean> whisperVadEnabled = new MutableLiveData<>(true);
+    private final MutableLiveData<String> whisperVadModel = new MutableLiveData<>(SubtitleGenerator.VAD_MODEL_WEBRTC);
+    private final MutableLiveData<String> whisperVadAggressiveness =
+            new MutableLiveData<>(SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL);
     private final MutableLiveData<String> whisperLanguage = new MutableLiveData<>("auto");
     private final MutableLiveData<Boolean> translateSubtitles = new MutableLiveData<>(false);
     private final MutableLiveData<String> translationSourceLanguage = new MutableLiveData<>("auto");
@@ -307,6 +312,8 @@ public class MainViewModel extends AndroidViewModel {
     public LiveData<Boolean> getKeepSentencesTogether() { return keepSentencesTogether; }
     public LiveData<Boolean> getSuppressWhisperSdh() { return suppressWhisperSdh; }
     public LiveData<Boolean> getWhisperVadEnabled() { return whisperVadEnabled; }
+    public LiveData<String> getWhisperVadModel() { return whisperVadModel; }
+    public LiveData<String> getWhisperVadAggressiveness() { return whisperVadAggressiveness; }
     public LiveData<String> getWhisperLanguage() { return whisperLanguage; }
     public LiveData<Boolean> getTranslateSubtitles() { return translateSubtitles; }
     public LiveData<String> getTranslationSourceLanguage() { return translationSourceLanguage; }
@@ -339,6 +346,14 @@ public class MainViewModel extends AndroidViewModel {
         boolean savedWhisperVadEnabled = settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, true);
         whisperVadEnabled.setValue(savedWhisperVadEnabled);
         subtitleGenerator.setWhisperVadEnabled(savedWhisperVadEnabled);
+        String savedWhisperVadModel = normalizeVadModel(settingsPrefs.getString(
+                KEY_WHISPER_VAD_MODEL, SubtitleGenerator.VAD_MODEL_WEBRTC));
+        whisperVadModel.setValue(savedWhisperVadModel);
+        subtitleGenerator.setWhisperVadModel(savedWhisperVadModel);
+        String savedWhisperVadAggressiveness = normalizeVadAggressiveness(settingsPrefs.getString(
+                KEY_WHISPER_VAD_AGGRESSIVENESS, SubtitleGenerator.VAD_AGGRESSIVENESS_VERY_AGGRESSIVE));
+        whisperVadAggressiveness.setValue(savedWhisperVadAggressiveness);
+        subtitleGenerator.setWhisperVadAggressiveness(savedWhisperVadAggressiveness);
         String savedWhisperLanguage = settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto");
         whisperLanguage.setValue(savedWhisperLanguage);
         subtitleGenerator.setWhisperLanguage(savedWhisperLanguage);
@@ -396,6 +411,20 @@ public class MainViewModel extends AndroidViewModel {
         settingsPrefs.edit().putBoolean(KEY_WHISPER_VAD_ENABLED, enabled).apply();
     }
 
+    public void setWhisperVadModel(String model) {
+        String normalizedModel = normalizeVadModel(model);
+        whisperVadModel.setValue(normalizedModel);
+        subtitleGenerator.setWhisperVadModel(normalizedModel);
+        settingsPrefs.edit().putString(KEY_WHISPER_VAD_MODEL, normalizedModel).apply();
+    }
+
+    public void setWhisperVadAggressiveness(String aggressiveness) {
+        String normalizedAggressiveness = normalizeVadAggressiveness(aggressiveness);
+        whisperVadAggressiveness.setValue(normalizedAggressiveness);
+        subtitleGenerator.setWhisperVadAggressiveness(normalizedAggressiveness);
+        settingsPrefs.edit().putString(KEY_WHISPER_VAD_AGGRESSIVENESS, normalizedAggressiveness).apply();
+    }
+
     public void setWhisperLanguage(String language) {
         String normalizedLanguage = language == null || language.trim().isEmpty()
                 ? "auto"
@@ -436,6 +465,26 @@ public class MainViewModel extends AndroidViewModel {
             return fallback;
         }
         return language.trim().toLowerCase(Locale.US);
+    }
+
+    private String normalizeVadModel(String model) {
+        if (SubtitleGenerator.VAD_MODEL_SILERO.equalsIgnoreCase(model)) {
+            return SubtitleGenerator.VAD_MODEL_SILERO;
+        }
+        if (SubtitleGenerator.VAD_MODEL_YAMNET.equalsIgnoreCase(model)) {
+            return SubtitleGenerator.VAD_MODEL_YAMNET;
+        }
+        return SubtitleGenerator.VAD_MODEL_WEBRTC;
+    }
+
+    private String normalizeVadAggressiveness(String aggressiveness) {
+        if (SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL.equalsIgnoreCase(aggressiveness)) {
+            return SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL;
+        }
+        if (SubtitleGenerator.VAD_AGGRESSIVENESS_AGGRESSIVE.equalsIgnoreCase(aggressiveness)) {
+            return SubtitleGenerator.VAD_AGGRESSIVENESS_AGGRESSIVE;
+        }
+        return SubtitleGenerator.VAD_AGGRESSIVENESS_VERY_AGGRESSIVE;
     }
 
     private <T> T getLiveDataValue(MutableLiveData<T> liveData, T fallback) {
@@ -1096,6 +1145,10 @@ public class MainViewModel extends AndroidViewModel {
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));
         subtitleGenerator.setWhisperVadEnabled(settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, true));
+        subtitleGenerator.setWhisperVadModel(settingsPrefs.getString(
+                KEY_WHISPER_VAD_MODEL, SubtitleGenerator.VAD_MODEL_WEBRTC));
+        subtitleGenerator.setWhisperVadAggressiveness(settingsPrefs.getString(
+                KEY_WHISPER_VAD_AGGRESSIVENESS, SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL));
         subtitleGenerator.setWhisperLanguage(settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto"));
         subtitleGenerator.setTranslationSettings(
                 settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false),
@@ -1242,6 +1295,9 @@ public class MainViewModel extends AndroidViewModel {
     private String subtitleProgressMessage(int progress) {
         if (progress == SubtitleGenerator.PROGRESS_TRANSLATING) {
             return "Translating subtitles...";
+        }
+        if (SubtitleGenerator.isScanningSpeechProgress(progress)) {
+            return "Detecting speech...";
         }
         if (progress == SubtitleGenerator.PROGRESS_DETECTING_LANGUAGE) {
             return "Detecting language...";

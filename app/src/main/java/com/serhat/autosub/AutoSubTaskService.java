@@ -50,6 +50,8 @@ public class AutoSubTaskService extends Service {
     private static final String KEY_KEEP_SENTENCES_TOGETHER = "keep_sentences_together";
     private static final String KEY_SUPPRESS_WHISPER_SDH = "suppress_whisper_sdh";
     private static final String KEY_WHISPER_VAD_ENABLED = "whisper_vad_enabled";
+    private static final String KEY_WHISPER_VAD_MODEL = "whisper_vad_model";
+    private static final String KEY_WHISPER_VAD_AGGRESSIVENESS = "whisper_vad_aggressiveness";
     private static final String KEY_WHISPER_LANGUAGE = "whisper_language";
     private static final String KEY_TRANSLATE_SUBTITLES = "translate_subtitles";
     private static final String KEY_TRANSLATION_SOURCE_LANGUAGE = "translation_source_language";
@@ -717,6 +719,10 @@ public class AutoSubTaskService extends Service {
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));
         subtitleGenerator.setWhisperVadEnabled(settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, true));
+        subtitleGenerator.setWhisperVadModel(settingsPrefs.getString(
+                KEY_WHISPER_VAD_MODEL, SubtitleGenerator.VAD_MODEL_WEBRTC));
+        subtitleGenerator.setWhisperVadAggressiveness(settingsPrefs.getString(
+                KEY_WHISPER_VAD_AGGRESSIVENESS, SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL));
         subtitleGenerator.setWhisperLanguage(settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto"));
         subtitleGenerator.setTranslationSettings(
                 settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false),
@@ -860,6 +866,9 @@ public class AutoSubTaskService extends Service {
     private String subtitleProgressMessage(int progress) {
         if (progress == SubtitleGenerator.PROGRESS_TRANSLATING) {
             return "Translating subtitles...";
+        }
+        if (SubtitleGenerator.isScanningSpeechProgress(progress)) {
+            return "Detecting speech...";
         }
         if (progress == SubtitleGenerator.PROGRESS_DETECTING_LANGUAGE) {
             return "Detecting language...";
