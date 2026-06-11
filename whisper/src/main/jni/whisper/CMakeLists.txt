@@ -13,11 +13,9 @@ set(WHISPER_LIB_DIR ${CMAKE_SOURCE_DIR}/..)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
 
-# Set consistent release flags - ADDED
 set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
-# Disable timestamps - ADDED
 add_definitions(-DGGML_NO_TIMESTAMPS=1)
 
 # 16KB Page Size Support: Add NDK r27 flexible page size compilation flag
@@ -68,9 +66,6 @@ function(build_library target_name)
 
     target_compile_definitions(${target_name} PUBLIC GGML_USE_CPU)
 
-    # Add reproducible build definitions - ADDED
-    target_compile_definitions(${target_name} PRIVATE GGML_NO_TIMESTAMPS=1)
-
     if (${target_name} STREQUAL "whisper_v8fp16_dotprod_va")
         target_compile_options(${target_name} PRIVATE -march=armv8.2-a+fp16+dotprod)
         set(GGML_COMPILE_OPTIONS                      -march=armv8.2-a+fp16+dotprod)
@@ -83,8 +78,6 @@ function(build_library target_name)
     endif ()
 
     if (NOT ${CMAKE_BUILD_TYPE} STREQUAL "Debug")
-        # Use consistent optimization flags - MODIFIED
-        target_compile_options(${target_name} PRIVATE -O3 -DNDEBUG)
         target_compile_options(${target_name} PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden)
         target_compile_options(${target_name} PRIVATE -ffunction-sections -fdata-sections)
 
@@ -102,7 +95,6 @@ function(build_library target_name)
         FetchContent_MakeAvailable(ggml)
 
         target_compile_options(ggml PRIVATE ${GGML_COMPILE_OPTIONS})
-        # Add reproducible build flags to ggml as well - ADDED
         target_compile_definitions(ggml PRIVATE GGML_NO_TIMESTAMPS=1)
         target_link_libraries(${target_name} ${LOG_LIB} android ggml)
     else()

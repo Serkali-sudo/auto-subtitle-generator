@@ -61,6 +61,7 @@ public class SubtitleGenerator {
     private static final int WHISPER_VAD_BATCH_SECONDS = 600;
     private static final int WEBRTC_VAD_FRAME_SAMPLES = 320;
     private static final int SILERO_VAD_FRAME_SAMPLES = 1536;
+    private static final String DEFAULT_ASS_FONT_NAME = "Noto Sans";
 
     private static final int VAD_SPEECH_DURATION_MS = 50;
     private static final int VAD_SILENCE_DURATION_MS = 300;
@@ -85,6 +86,12 @@ public class SubtitleGenerator {
     public static final String VAD_AGGRESSIVENESS_NORMAL = "normal";
     public static final String VAD_AGGRESSIVENESS_AGGRESSIVE = "aggressive";
     public static final String VAD_AGGRESSIVENESS_VERY_AGGRESSIVE = "very_aggressive";
+    private static final String TRANSLATION_SUBTITLE_HTML_COLOR = "#FFFF00";
+    private static final String[] ASS_FONT_FALLBACK_PATHS = {
+            "/system/fonts/NotoSans-Regular.ttf",
+            "/system/fonts/Roboto-Regular.ttf",
+            "/system/fonts/DroidSans.ttf"
+    };
     public enum SubtitleLayerMode {
         ORIGINAL,
         TRANSLATION,
@@ -779,7 +786,8 @@ public class SubtitleGenerator {
                     return;
                 }
                 FileOutputStream fos = new FileOutputStream(subtitleFile);
-                List<SubtitleEntry> exportEntries = projectSubtitleEntries(entries, layerMode);
+                List<SubtitleEntry> exportEntries = projectSubtitleEntries(entries, layerMode,
+                        format.equalsIgnoreCase("srt"));
 
                 if (format.equalsIgnoreCase("srt")) {
                     writeSrtSubtitles(exportEntries, fos);
@@ -814,6 +822,11 @@ public class SubtitleGenerator {
     }
 
     public static List<SubtitleEntry> projectSubtitleEntries(List<SubtitleEntry> entries, SubtitleLayerMode layerMode) {
+        return projectSubtitleEntries(entries, layerMode, false);
+    }
+
+    public static List<SubtitleEntry> projectSubtitleEntries(List<SubtitleEntry> entries, SubtitleLayerMode layerMode,
+                                                            boolean colorDoubleTranslation) {
         List<SubtitleEntry> projected = new ArrayList<>();
         if (entries == null) return projected;
         for (SubtitleEntry entry : entries) {
@@ -822,7 +835,8 @@ public class SubtitleGenerator {
             if (layerMode == SubtitleLayerMode.TRANSLATION) {
                 text = entry.hasTranslation() ? entry.getTranslationText() : entry.getText();
             } else if (layerMode == SubtitleLayerMode.DOUBLE && entry.hasTranslation()) {
-                text = entry.getText() + "\n" + entry.getTranslationText();
+                text = entry.getText() + "\n" + formatDoubleTranslationText(
+                        entry.getTranslationText(), colorDoubleTranslation);
             }
             SubtitleEntry copy = new SubtitleEntry(entry.getNumber(), entry.getStartTime(), entry.getEndTime(),
                     text, new ArrayList<>(entry.getWords()));
@@ -830,6 +844,15 @@ public class SubtitleGenerator {
             projected.add(copy);
         }
         return projected;
+    }
+
+    private static String formatDoubleTranslationText(String translationText, boolean withHtmlColor) {
+        if (!withHtmlColor) {
+            return translationText;
+        }
+        return "<font color=\"" + TRANSLATION_SUBTITLE_HTML_COLOR + "\">"
+                + translationText
+                + "</font>";
     }
 
     private void writeSrtSubtitles(List<SubtitleEntry> subtitles, FileOutputStream fos) throws IOException {
@@ -949,7 +972,7 @@ public class SubtitleGenerator {
             if (fonts != null) {
                 for (String font : fonts) {
                     File outFile = new File(customFontsDir, font);
-                    if (!outFile.exists()) {
+                    if (!outFile.exists() || outFile.length() == 0) {
                         InputStream in = context.getAssets().open("fonts/" + font);
                         FileOutputStream out = new FileOutputStream(outFile);
                         byte[] buffer = new byte[1024];
@@ -965,6 +988,50 @@ public class SubtitleGenerator {
         } catch (IOException e) {
             Log.e(TAG, "Error copying fonts from assets", e);
         }
+    }
+
+    private String resolveAssFontName(String fontName) {
+        if (fontName == null || fontName.trim().isEmpty() || "RobotoRegular".equals(fontName)) {
+            File bundledRoboto = new File(context.getFilesDir(), "fonts/Roboto-Regular.ttf");
+            return isUsableFontFile(bundledRoboto) ? "Roboto" : DEFAULT_ASS_FONT_NAME;
+        }
+        return fontName.trim();
+    }
+
+    private File resolveAssFontFile(String assFontName) {
+        File customFontsDir = new File(context.getFilesDir(), "fonts");
+        File requestedFont = new File(customFontsDir, assFontName + ".ttf");
+        if (isUsableFontFile(requestedFont)) {
+            return requestedFont;
+        }
+
+        File bundledRoboto = new File(customFontsDir, "Roboto-Regular.ttf");
+        if (isUsableFontFile(bundledRoboto) && "RobotoRegular".equals(assFontName)) {
+            return bundledRoboto;
+        }
+
+        for (String fontPath : ASS_FONT_FALLBACK_PATHS) {
+            File fallbackFont = new File(fontPath);
+            if (isUsableFontFile(fallbackFont)) {
+                return fallbackFont;
+            }
+        }
+        return null;
+    }
+
+    private boolean isUsableFontFile(File fontFile) {
+        return fontFile != null && fontFile.isFile() && fontFile.length() > 0;
+    }
+
+    private String buildFontAttachmentOptions(File fontFile) {
+        if (!isUsableFontFile(fontFile)) {
+            return "";
+        }
+        String mimeType = fontFile.getName().toLowerCase(Locale.US).endsWith(".otf")
+                ? "application/vnd.ms-opentype"
+                : "application/x-truetype-font";
+        return String.format(Locale.US, " -attach %s -metadata:s:t mimetype=%s -metadata:s:t filename=%s",
+                fontFile.getAbsolutePath(), mimeType, fontFile.getName());
     }
 
     public void exportVideoWithSubtitles(Uri videoUri, List<SubtitleEntry> subtitles, boolean burnSubtitles, String fontName, VideoExportCallback callback) {
@@ -1001,14 +1068,20 @@ public class SubtitleGenerator {
 
                 boolean styledShorts = shortsStyle != null && (!forceMp4SoftSubtitles || burnSubtitles);
                 boolean styledDouble = layerMode == SubtitleLayerMode.DOUBLE && (burnSubtitles || styledShorts);
-                List<SubtitleEntry> exportEntries = projectSubtitleEntries(subtitles, layerMode);
+                boolean softAssExport = (styledShorts || styledDouble) && !burnSubtitles && !forceMp4SoftSubtitles;
+                String assFontName = resolveAssFontName(fontName);
+                File assFontFile = softAssExport ? resolveAssFontFile(assFontName) : null;
+                boolean srtBasedDoubleExport = layerMode == SubtitleLayerMode.DOUBLE
+                        && !styledShorts && !styledDouble;
+                List<SubtitleEntry> exportEntries = projectSubtitleEntries(subtitles, layerMode,
+                        srtBasedDoubleExport);
                 subtitleFile = new File(context.getCacheDir(), (styledShorts || styledDouble) ? "temp_subtitles.ass" : "temp_subtitles.srt");
                 FileOutputStream fos = new FileOutputStream(subtitleFile);
                 if (styledShorts) {
-                    writeAssSubtitles(subtitles, fos, shortsStyle, fontName == null ? "RobotoRegular" : fontName, layerMode);
+                    writeAssSubtitles(subtitles, fos, shortsStyle, assFontName, layerMode);
                 } else if (styledDouble) {
                     ShortsSubtitleStyle defaultStyle = new ShortsSubtitleStyle(0.5f, 0.88f, 30f, false, false, false);
-                    writeAssSubtitles(subtitles, fos, defaultStyle, fontName == null ? "RobotoRegular" : fontName, layerMode);
+                    writeAssSubtitles(subtitles, fos, defaultStyle, assFontName, layerMode);
                 } else {
                     writeSrtSubtitles(exportEntries, fos);
                 }
@@ -1017,7 +1090,7 @@ public class SubtitleGenerator {
 //                logSrtFileContents(srtFile);
 
                 String videoName = getVideoNameFromUri(videoUri);
-                String outputExtension = (styledShorts || styledDouble) && !burnSubtitles && !forceMp4SoftSubtitles ? "mkv" : "mp4";
+                String outputExtension = softAssExport ? "mkv" : "mp4";
                 String uniqueFileName = buildExportFileName((burnSubtitles ? "hard-" : "soft-") + subtitleLayerSlug(layerMode) + "-subtitles",
                         videoName, outputExtension);
                 Log.d(TAG,"File Name:" + uniqueFileName);
@@ -1036,8 +1109,9 @@ public class SubtitleGenerator {
                     command = String.format("-i %s -vf ass=%s -q:v 1 -c:a copy %s",
                             inputPath, subtitlePath, outputPath);
                 } else if (styledShorts || styledDouble) {
-                    command = String.format("-i %s -i %s -c copy -c:s ass %s",
-                            inputPath, subtitlePath, outputPath);
+                    String fontAttachmentOptions = buildFontAttachmentOptions(assFontFile);
+                    command = String.format("-i %s -i %s -c copy -c:s ass%s %s",
+                            inputPath, subtitlePath, fontAttachmentOptions, outputPath);
                 } else if (burnSubtitles) {
 //                    command = String.format("-i %s -vf subtitles=%s:force_style='FontName=%s' -c:v mpeg4 -c:a copy %s",
 //                            inputPath, subtitlePath, fontName, outputPath);

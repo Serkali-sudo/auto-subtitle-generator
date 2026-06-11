@@ -15,7 +15,6 @@ android {
         }
         externalNativeBuild {
             cmake {
-                // Reproducible build flags - ADDED
                 arguments "-DCMAKE_BUILD_TYPE=Release"
 
                 cppFlags "-ffile-prefix-map=\${projectDir}=."
@@ -34,11 +33,9 @@ android {
                             "-DCLBLAST_HOME=${project.property('CLBLAST_HOME')}",
                             "-DOPENCL_ROOT=${project.property('OPENCL_ROOT')}",
                             "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH",
-                            "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH",
-                            "-DCMAKE_BUILD_TYPE=Release"  // ADDED
+                            "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH"
                 } else if (project.hasProperty('GGML_HOME')) {
-                    arguments "-DGGML_HOME=${project.property('GGML_HOME')}",
-                            "-DCMAKE_BUILD_TYPE=Release"  // ADDED
+                    arguments "-DGGML_HOME=${project.property('GGML_HOME')}"
                 }
             }
         }
@@ -63,7 +60,6 @@ android {
     ndkVersion '27.0.12077973'
 }
 
-// Reproducible build configuration - ADDED
 tasks.withType(AbstractArchiveTask).configureEach {
     preserveFileTimestamps = false
     reproducibleFileOrder = true
