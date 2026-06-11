@@ -15,7 +15,7 @@ import java.util.List;
 
 public class QueueStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "autosub_queue.db";
-    private static final int DB_VERSION = 6;
+    private static final int DB_VERSION = 7;
     private static final String TABLE = "queue_items";
 
     public QueueStore(Context context) {
@@ -42,6 +42,7 @@ public class QueueStore extends SQLiteOpenHelper {
                 "translation_target_language TEXT," +
                 "translation_status TEXT," +
                 "shorts_video INTEGER DEFAULT 0," +
+                "use_vad INTEGER DEFAULT 0," +
                 "shorts_caption_x REAL DEFAULT 0.5," +
                 "shorts_caption_y REAL DEFAULT 0.5," +
                 "shorts_caption_scale REAL DEFAULT 1.0," +
@@ -78,6 +79,9 @@ public class QueueStore extends SQLiteOpenHelper {
                 db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN translation_target_language TEXT");
                 db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN translation_status TEXT");
             }
+            if (oldVersion < 7) {
+                db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN use_vad INTEGER DEFAULT 0");
+            }
         }
     }
 
@@ -99,6 +103,7 @@ public class QueueStore extends SQLiteOpenHelper {
         values.put("translation_target_language", item.getTranslationTargetLanguage());
         values.put("translation_status", item.getTranslationStatus());
         values.put("shorts_video", item.isShortsVideo() ? 1 : 0);
+        values.put("use_vad", item.isUseVad() ? 1 : 0);
         values.put("shorts_caption_x", item.getShortsCaptionX());
         values.put("shorts_caption_y", item.getShortsCaptionY());
         values.put("shorts_caption_scale", item.getShortsCaptionScale());
@@ -129,6 +134,7 @@ public class QueueStore extends SQLiteOpenHelper {
         values.put("translation_target_language", item.getTranslationTargetLanguage());
         values.put("translation_status", item.getTranslationStatus());
         values.put("shorts_video", item.isShortsVideo() ? 1 : 0);
+        values.put("use_vad", item.isUseVad() ? 1 : 0);
         values.put("shorts_caption_x", item.getShortsCaptionX());
         values.put("shorts_caption_y", item.getShortsCaptionY());
         values.put("shorts_caption_scale", item.getShortsCaptionScale());
@@ -169,6 +175,7 @@ public class QueueStore extends SQLiteOpenHelper {
                 item.setTranslationTargetLanguage(getOptionalString(cursor, "translation_target_language", ""));
                 item.setTranslationStatus(getOptionalString(cursor, "translation_status", ""));
                 item.setShortsVideo(cursor.getInt(cursor.getColumnIndexOrThrow("shorts_video")) == 1);
+                item.setUseVad(getOptionalInt(cursor, "use_vad", 0) == 1);
                 item.setShortsCaptionX(getOptionalFloat(cursor, "shorts_caption_x", 0.5f));
                 item.setShortsCaptionY(getOptionalFloat(cursor, "shorts_caption_y", 0.5f));
                 item.setShortsCaptionScale(getOptionalFloat(cursor, "shorts_caption_scale", 1f));

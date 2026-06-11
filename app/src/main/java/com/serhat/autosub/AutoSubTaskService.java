@@ -44,7 +44,6 @@ public class AutoSubTaskService extends Service {
     private static final int NOTIFICATION_ID = NotificationHelper.FOREGROUND_SERVICE_NOTIFICATION_ID;
     private static final String MEDIA_WAKE_LOCK_TAG = "AutoSub:MediaProcessing";
     private static final String PREFS_SETTINGS = "autosub_settings";
-    private static final String KEY_SHORTS_MODE_WORD_BY_WORD = "shorts_mode_word_by_word";
     private static final String KEY_BATCH_FORMAT = "batch_format";
     private static final String KEY_SUBTITLE_MAX_LENGTH = "subtitle_max_length";
     private static final String KEY_KEEP_SENTENCES_TOGETHER = "keep_sentences_together";
@@ -53,6 +52,7 @@ public class AutoSubTaskService extends Service {
     private static final String KEY_WHISPER_VAD_MODEL = "whisper_vad_model";
     private static final String KEY_WHISPER_VAD_AGGRESSIVENESS = "whisper_vad_aggressiveness";
     private static final String KEY_WHISPER_LANGUAGE = "whisper_language";
+    private static final String KEY_WHISPER_THREAD_COUNT = "whisper_thread_count";
     private static final String KEY_TRANSLATE_SUBTITLES = "translate_subtitles";
     private static final String KEY_TRANSLATION_SOURCE_LANGUAGE = "translation_source_language";
     private static final String KEY_TRANSLATION_TARGET_LANGUAGE = "translation_target_language";
@@ -710,24 +710,27 @@ public class AutoSubTaskService extends Service {
         queueStore.updateItem(queueItem);
         publishQueueItems();
 
-        boolean useWordByWord = queueItem.isShortsVideo()
-                && settingsPrefs.getBoolean(KEY_SHORTS_MODE_WORD_BY_WORD, false);
+        // The item's shorts flag already captures the word-by-word choice made when it was queued.
+        boolean useWordByWord = queueItem.isShortsVideo();
         subtitleGenerator.setWordByWordMode(useWordByWord);
         subtitleGenerator.setMaxSubtitleLength(settingsPrefs.getInt(
                 KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH));
         subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));
-        subtitleGenerator.setWhisperVadEnabled(settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, true));
+        subtitleGenerator.setWhisperVadEnabled(
+                settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, false) || queueItem.isUseVad());
         subtitleGenerator.setWhisperVadModel(settingsPrefs.getString(
                 KEY_WHISPER_VAD_MODEL, SubtitleGenerator.VAD_MODEL_WEBRTC));
         subtitleGenerator.setWhisperVadAggressiveness(settingsPrefs.getString(
                 KEY_WHISPER_VAD_AGGRESSIVENESS, SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL));
         subtitleGenerator.setWhisperLanguage(settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto"));
+        subtitleGenerator.setWhisperThreadCount(settingsPrefs.getInt(KEY_WHISPER_THREAD_COUNT, 0));
         subtitleGenerator.setTranslationSettings(
                 settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false),
                 settingsPrefs.getString(KEY_TRANSLATION_SOURCE_LANGUAGE, "auto"),
-                settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE, "en"));
+                settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE,
+                        SubtitleGenerator.getDefaultTranslationTargetLanguage()));
         publishState(new AutoSubTaskState(AutoSubTaskState.TaskType.SUBTITLE_GENERATION,
                 "Generating Subtitles: " + queueItem.getDisplayName(), "Extracting audio...",
                 -1, queueItem.getId(), activeDownloadModelId, activeDownloadSpeedText,

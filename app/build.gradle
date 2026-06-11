@@ -46,7 +46,6 @@ dependencies {
     implementation 'com.alphacephei:vosk-android:0.3.75@aar'
     implementation 'com.github.gkonovalov.android-vad:webrtc:2.0.10'
     implementation 'com.github.gkonovalov.android-vad:silero:2.0.10'
-    implementation 'com.github.gkonovalov.android-vad:yamnet:2.0.10'
     implementation project(':whisper')
     implementation(files("libs/ffmpeg-kit.aar"))
     implementation 'com.arthenica:smart-exception-java:0.2.1'

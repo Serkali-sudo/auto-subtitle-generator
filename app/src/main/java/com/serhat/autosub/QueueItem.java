@@ -30,6 +30,7 @@ public class QueueItem {
     private String translationTargetLanguage = "";
     private String translationStatus = "";
     private boolean shortsVideo;
+    private boolean useVad;
     private float shortsCaptionX = 0.5f;
     private float shortsCaptionY = 0.5f;
     private float shortsCaptionScale = 1f;
@@ -194,6 +195,14 @@ public class QueueItem {
 
     public void setShortsVideo(boolean shortsVideo) {
         this.shortsVideo = shortsVideo;
+    }
+
+    public boolean isUseVad() {
+        return useVad;
+    }
+
+    public void setUseVad(boolean useVad) {
+        this.useVad = useVad;
     }
 
     public float getShortsCaptionX() {

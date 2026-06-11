@@ -28,8 +28,24 @@ public final class WhisperCpuConfig {
     private static int[] trialThreadCounts = new int[0];
     private static double[] trialThroughput = new double[0];
     private static int trialIndex;
+    // 0 means "auto" (use the heuristic / auto-tuning), otherwise a user-forced thread count.
+    private static int manualThreadCount;
 
     private WhisperCpuConfig() {
+    }
+
+    // Largest thread count the user is allowed to pick manually on this device.
+    public static int getMaxThreadCount() {
+        return Math.max(1, Runtime.getRuntime().availableProcessors());
+    }
+
+    // Set a user-forced thread count. Pass 0 to fall back to automatic selection.
+    public static synchronized void setManualThreadCount(int threadCount) {
+        if (threadCount <= 0) {
+            manualThreadCount = 0;
+        } else {
+            manualThreadCount = Math.min(threadCount, getMaxThreadCount());
+        }
     }
 
     public static synchronized void configureThreadTuning(Context context, String modelId) {
@@ -69,6 +85,9 @@ public final class WhisperCpuConfig {
 
     // Prefer big cores, but do not ask whisper.cpp for more workers than the CPU can run well.
     public static synchronized int getPreferredThreadCount() {
+        if (manualThreadCount > 0) {
+            return Math.min(manualThreadCount, getMaxThreadCount());
+        }
         if (cachedThreadCount > 0) {
             return cachedThreadCount;
         }

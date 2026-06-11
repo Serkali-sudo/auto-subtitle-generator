@@ -60,6 +60,7 @@ public class MainViewModel extends AndroidViewModel {
     private static final String KEY_WHISPER_VAD_MODEL = "whisper_vad_model";
     private static final String KEY_WHISPER_VAD_AGGRESSIVENESS = "whisper_vad_aggressiveness";
     private static final String KEY_WHISPER_LANGUAGE = "whisper_language";
+    private static final String KEY_WHISPER_THREAD_COUNT = "whisper_thread_count";
     private static final String KEY_TRANSLATE_SUBTITLES = "translate_subtitles";
     private static final String KEY_TRANSLATION_SOURCE_LANGUAGE = "translation_source_language";
     private static final String KEY_TRANSLATION_TARGET_LANGUAGE = "translation_target_language";
@@ -100,14 +101,17 @@ public class MainViewModel extends AndroidViewModel {
     private final MutableLiveData<Integer> subtitleMaxLength = new MutableLiveData<>(SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH);
     private final MutableLiveData<Boolean> keepSentencesTogether = new MutableLiveData<>(SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER);
     private final MutableLiveData<Boolean> suppressWhisperSdh = new MutableLiveData<>(true);
-    private final MutableLiveData<Boolean> whisperVadEnabled = new MutableLiveData<>(true);
+    private final MutableLiveData<Boolean> whisperVadEnabled = new MutableLiveData<>(false);
     private final MutableLiveData<String> whisperVadModel = new MutableLiveData<>(SubtitleGenerator.VAD_MODEL_WEBRTC);
     private final MutableLiveData<String> whisperVadAggressiveness =
             new MutableLiveData<>(SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL);
     private final MutableLiveData<String> whisperLanguage = new MutableLiveData<>("auto");
+    // 0 = automatic thread selection, otherwise a user-forced Whisper thread count.
+    private final MutableLiveData<Integer> whisperThreadCount = new MutableLiveData<>(0);
     private final MutableLiveData<Boolean> translateSubtitles = new MutableLiveData<>(false);
     private final MutableLiveData<String> translationSourceLanguage = new MutableLiveData<>("auto");
-    private final MutableLiveData<String> translationTargetLanguage = new MutableLiveData<>("en");
+    private final MutableLiveData<String> translationTargetLanguage =
+            new MutableLiveData<>(SubtitleGenerator.getDefaultTranslationTargetLanguage());
     private final MutableLiveData<Float> shortsCaptionSize = new MutableLiveData<>(30f);
     private final MutableLiveData<Boolean> shortsUppercase = new MutableLiveData<>(true);
     private final MutableLiveData<Boolean> shortsWordByWordDefault = new MutableLiveData<>(false);
@@ -315,6 +319,7 @@ public class MainViewModel extends AndroidViewModel {
     public LiveData<String> getWhisperVadModel() { return whisperVadModel; }
     public LiveData<String> getWhisperVadAggressiveness() { return whisperVadAggressiveness; }
     public LiveData<String> getWhisperLanguage() { return whisperLanguage; }
+    public LiveData<Integer> getWhisperThreadCount() { return whisperThreadCount; }
     public LiveData<Boolean> getTranslateSubtitles() { return translateSubtitles; }
     public LiveData<String> getTranslationSourceLanguage() { return translationSourceLanguage; }
     public LiveData<String> getTranslationTargetLanguage() { return translationTargetLanguage; }
@@ -343,7 +348,7 @@ public class MainViewModel extends AndroidViewModel {
         boolean suppressSdh = settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true);
         suppressWhisperSdh.setValue(suppressSdh);
         subtitleGenerator.setSuppressWhisperSdh(suppressSdh);
-        boolean savedWhisperVadEnabled = settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, true);
+        boolean savedWhisperVadEnabled = settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, false);
         whisperVadEnabled.setValue(savedWhisperVadEnabled);
         subtitleGenerator.setWhisperVadEnabled(savedWhisperVadEnabled);
         String savedWhisperVadModel = normalizeVadModel(settingsPrefs.getString(
@@ -357,9 +362,13 @@ public class MainViewModel extends AndroidViewModel {
         String savedWhisperLanguage = settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto");
         whisperLanguage.setValue(savedWhisperLanguage);
         subtitleGenerator.setWhisperLanguage(savedWhisperLanguage);
+        int savedWhisperThreadCount = settingsPrefs.getInt(KEY_WHISPER_THREAD_COUNT, 0);
+        whisperThreadCount.setValue(savedWhisperThreadCount);
+        subtitleGenerator.setWhisperThreadCount(savedWhisperThreadCount);
         boolean savedTranslateSubtitles = settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false);
         String savedTranslationSource = settingsPrefs.getString(KEY_TRANSLATION_SOURCE_LANGUAGE, "auto");
-        String savedTranslationTarget = settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE, "en");
+        String savedTranslationTarget = settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE,
+                SubtitleGenerator.getDefaultTranslationTargetLanguage());
         translateSubtitles.setValue(savedTranslateSubtitles);
         translationSourceLanguage.setValue(savedTranslationSource);
         translationTargetLanguage.setValue(savedTranslationTarget);
@@ -434,6 +443,13 @@ public class MainViewModel extends AndroidViewModel {
         settingsPrefs.edit().putString(KEY_WHISPER_LANGUAGE, normalizedLanguage).apply();
     }
 
+    public void setWhisperThreadCount(int threadCount) {
+        int normalizedThreadCount = Math.max(0, threadCount);
+        whisperThreadCount.setValue(normalizedThreadCount);
+        subtitleGenerator.setWhisperThreadCount(normalizedThreadCount);
+        settingsPrefs.edit().putInt(KEY_WHISPER_THREAD_COUNT, normalizedThreadCount).apply();
+    }
+
     public void setTranslateSubtitles(boolean enabled) {
         translateSubtitles.setValue(enabled);
         subtitleGenerator.setTranslationSettings(enabled,
@@ -470,9 +486,6 @@ public class MainViewModel extends AndroidViewModel {
     private String normalizeVadModel(String model) {
         if (SubtitleGenerator.VAD_MODEL_SILERO.equalsIgnoreCase(model)) {
             return SubtitleGenerator.VAD_MODEL_SILERO;
-        }
-        if (SubtitleGenerator.VAD_MODEL_YAMNET.equalsIgnoreCase(model)) {
-            return SubtitleGenerator.VAD_MODEL_YAMNET;
         }
         return SubtitleGenerator.VAD_MODEL_WEBRTC;
     }
@@ -1041,11 +1054,21 @@ public class MainViewModel extends AndroidViewModel {
     }
 
     public void addVideosToQueue(List<Uri> uris, DisplayNameResolver nameResolver, RotationResolver rotationResolver) {
+        addVideosToQueue(uris, nameResolver, rotationResolver, false);
+    }
+
+    public void addVideosToQueue(List<Uri> uris, DisplayNameResolver nameResolver,
+                                 RotationResolver rotationResolver, boolean useVad) {
         new Thread(() -> {
             List<QueueItem> newItems = new ArrayList<>();
+            boolean wordByWordCaptions = settingsPrefs.getBoolean(KEY_SHORTS_MODE_WORD_BY_WORD, false);
             for (Uri uri : uris) {
                 QueueItem item = new QueueItem(uri, nameResolver.resolve(uri));
-                item.setShortsVideo(rotationResolver.isVertical(uri));
+                // "Shorts mode" for an item means word-by-word captions, which only applies when the
+                // video is vertical AND the user picked word-by-word in the Shorts dialog. A vertical
+                // video with "Standard captions" is treated as a normal video.
+                item.setShortsVideo(rotationResolver.isVertical(uri) && wordByWordCaptions);
+                item.setUseVad(useVad);
                 long id = queueStore.addItem(item);
                 item.setId(id);
                 
@@ -1136,24 +1159,27 @@ public class MainViewModel extends AndroidViewModel {
         
         refreshQueue();
 
-        boolean isShorts = queueItem.isShortsVideo();
-        boolean useWordByWord = isShorts && settingsPrefs.getBoolean(KEY_SHORTS_MODE_WORD_BY_WORD, false);
+        // The item's shorts flag already captures the word-by-word choice made when it was queued.
+        boolean useWordByWord = queueItem.isShortsVideo();
         subtitleGenerator.setWordByWordMode(useWordByWord);
         subtitleGenerator.setMaxSubtitleLength(settingsPrefs.getInt(
                 KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH));
         subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));
-        subtitleGenerator.setWhisperVadEnabled(settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, true));
+        subtitleGenerator.setWhisperVadEnabled(
+                settingsPrefs.getBoolean(KEY_WHISPER_VAD_ENABLED, false) || queueItem.isUseVad());
         subtitleGenerator.setWhisperVadModel(settingsPrefs.getString(
                 KEY_WHISPER_VAD_MODEL, SubtitleGenerator.VAD_MODEL_WEBRTC));
         subtitleGenerator.setWhisperVadAggressiveness(settingsPrefs.getString(
                 KEY_WHISPER_VAD_AGGRESSIVENESS, SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL));
         subtitleGenerator.setWhisperLanguage(settingsPrefs.getString(KEY_WHISPER_LANGUAGE, "auto"));
+        subtitleGenerator.setWhisperThreadCount(settingsPrefs.getInt(KEY_WHISPER_THREAD_COUNT, 0));
         subtitleGenerator.setTranslationSettings(
                 settingsPrefs.getBoolean(KEY_TRANSLATE_SUBTITLES, false),
                 settingsPrefs.getString(KEY_TRANSLATION_SOURCE_LANGUAGE, "auto"),
-                settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE, "en"));
+                settingsPrefs.getString(KEY_TRANSLATION_TARGET_LANGUAGE,
+                        SubtitleGenerator.getDefaultTranslationTargetLanguage()));
 
         subtitleGenerator.generateSubtitles(queueItem.getVideoUri(), permanentAudioPath, new SubtitleGenerator.SubtitleGenerationCallback() {
             @Override

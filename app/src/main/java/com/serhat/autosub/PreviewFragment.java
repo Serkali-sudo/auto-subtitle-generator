@@ -111,7 +111,6 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                 long position = player.getCurrentPosition();
                 updateHighlightedSubtitle(position);
                 updateShortsCaption(position);
-                updateNormalSubtitleOverlay(position);
                 handler.postDelayed(this, UPDATE_INTERVAL);
             }
         }
@@ -184,7 +183,6 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
             public void onPositionDiscontinuity(Player.PositionInfo oldPosition, Player.PositionInfo newPosition, int reason) {
                 updateHighlightedSubtitle(newPosition.positionMs);
                 updateShortsCaption(newPosition.positionMs);
-                updateNormalSubtitleOverlay(newPosition.positionMs);
             }
         });
     }
@@ -257,7 +255,6 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
             if (entries != null) {
                 updateHighlightedSubtitle(player.getCurrentPosition());
                 updateShortsCaption(player.getCurrentPosition());
-                updateNormalSubtitleOverlay(player.getCurrentPosition());
             }
         });
 
@@ -269,7 +266,6 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
             binding.shortsOverlay.post(() -> {
                 applyShortsCaptionPosition();
                 updateShortsCaption(player.getCurrentPosition());
-                updateNormalSubtitleOverlay(player.getCurrentPosition());
             });
         });
 
@@ -442,32 +438,6 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
         binding.shortsWordTV.setText(activeText);
         binding.shortsTranslationTV.setText(activeTranslation);
         binding.shortsWordTV.post(this::applyShortsCaptionPosition);
-    }
-
-    private void updateNormalSubtitleOverlay(long positionMs) {
-        Boolean shortsMode = viewModel.getShortsPreviewMode().getValue();
-        List<SubtitleGenerator.SubtitleEntry> entries = viewModel.getSubtitleEntries().getValue();
-        if (Boolean.TRUE.equals(shortsMode) || entries == null || binding.playerFrame.getVisibility() != View.VISIBLE) {
-            binding.normalSubtitleOverlay.setVisibility(View.GONE);
-            return;
-        }
-        SubtitleGenerator.SubtitleEntry activeEntry = null;
-        for (SubtitleGenerator.SubtitleEntry entry : entries) {
-            long startTime = parseTime(entry.getStartTime());
-            long endTime = parseTime(entry.getEndTime());
-            if (positionMs >= startTime && positionMs < endTime) {
-                activeEntry = entry;
-                break;
-            }
-        }
-        if (activeEntry == null || activeEntry.getText() == null || activeEntry.getText().trim().isEmpty()) {
-            binding.normalSubtitleOverlay.setVisibility(View.GONE);
-            return;
-        }
-        binding.normalOriginalSubtitleTV.setText(activeEntry.getText());
-        binding.normalTranslationSubtitleTV.setText(activeEntry.getTranslationText());
-        binding.normalTranslationSubtitleTV.setVisibility(activeEntry.hasTranslation() ? View.VISIBLE : View.GONE);
-        binding.normalSubtitleOverlay.setVisibility(View.VISIBLE);
     }
 
     private void applyShortsCaptionScale() {

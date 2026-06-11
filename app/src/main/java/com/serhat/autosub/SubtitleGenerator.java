@@ -22,6 +22,7 @@ import com.konovalov.vad.webrtc.config.Mode;
 import com.konovalov.vad.webrtc.config.SampleRate;
 import com.whispercpp.whisper.WhisperCallback;
 import com.whispercpp.whisper.WhisperContext;
+import com.whispercpp.whisper.WhisperCpuConfig;
 
 import org.json.JSONObject;
 import org.vosk.LibVosk;
@@ -56,16 +57,17 @@ public class SubtitleGenerator {
     private static final long PROGRESS_UI_UPDATE_INTERVAL_MS = 1000;
     private static final int PROGRESS_UI_UPDATE_STEP = 5;
     private static final int WHISPER_SAMPLE_RATE = 16000;
-    private static final int WHISPER_CHUNK_SECONDS = 180;
+    private static final int WHISPER_CHUNK_SECONDS = 600;
     private static final int WHISPER_VAD_BATCH_SECONDS = 600;
     private static final int WEBRTC_VAD_FRAME_SAMPLES = 320;
     private static final int SILERO_VAD_FRAME_SAMPLES = 1536;
-    private static final int YAMNET_VAD_FRAME_SAMPLES = 975;
+
     private static final int VAD_SPEECH_DURATION_MS = 50;
     private static final int VAD_SILENCE_DURATION_MS = 300;
-    private static final int YAMNET_VAD_SPEECH_DURATION_MS = 30;
-    private static final int YAMNET_VAD_SILENCE_DURATION_MS = 30;
     private static final int VAD_PADDING_MS = 250;
+    private static final int VAD_BATCH_SEPARATOR_MS = 500;
+    private static final int VAD_BATCH_SEPARATOR_SAMPLES =
+            WHISPER_SAMPLE_RATE * VAD_BATCH_SEPARATOR_MS / 1000;
     private static final int VAD_MERGE_GAP_MS = 750;
     private static final long WHISPER_WORD_GAP_SPLIT_MS = 1200;
     private static final int WAV_HEADER_BYTES = 44;
@@ -80,7 +82,6 @@ public class SubtitleGenerator {
     public static final boolean DEFAULT_KEEP_SENTENCES_TOGETHER = true;
     public static final String VAD_MODEL_WEBRTC = "webrtc";
     public static final String VAD_MODEL_SILERO = "silero";
-    public static final String VAD_MODEL_YAMNET = "yamnet";
     public static final String VAD_AGGRESSIVENESS_NORMAL = "normal";
     public static final String VAD_AGGRESSIVENESS_AGGRESSIVE = "aggressive";
     public static final String VAD_AGGRESSIVENESS_VERY_AGGRESSIVE = "very_aggressive";
@@ -107,7 +108,7 @@ public class SubtitleGenerator {
     private volatile int maxSubtitleLength = DEFAULT_MAX_SUBTITLE_LENGTH;
     private volatile boolean keepSentencesTogether = DEFAULT_KEEP_SENTENCES_TOGETHER;
     private volatile boolean suppressWhisperSdh = true;
-    private volatile boolean whisperVadEnabled = true;
+    private volatile boolean whisperVadEnabled = false;
     private volatile String whisperVadModel = VAD_MODEL_WEBRTC;
     private volatile String whisperVadAggressiveness = VAD_AGGRESSIVENESS_NORMAL;
     private volatile String whisperLanguage = "auto";
@@ -135,6 +136,11 @@ public class SubtitleGenerator {
 
     public void setWhisperVadEnabled(boolean whisperVadEnabled) {
         this.whisperVadEnabled = whisperVadEnabled;
+    }
+
+    // 0 = automatic thread selection, otherwise a user-forced Whisper thread count.
+    public void setWhisperThreadCount(int threadCount) {
+        WhisperCpuConfig.setManualThreadCount(threadCount);
     }
 
     public void setWhisperVadModel(String whisperVadModel) {
@@ -174,6 +180,24 @@ public class SubtitleGenerator {
             return fallback;
         }
         return language.trim().toLowerCase(Locale.US);
+    }
+
+    // Translation target languages that the app exposes in Settings.
+    private static final java.util.Set<String> SUPPORTED_TRANSLATION_TARGETS =
+            new java.util.HashSet<>(java.util.Arrays.asList(
+                    "en", "tr", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "zh",
+                    "ja", "ko", "ar", "hi", "vi", "uk", "fa", "el", "sv", "cs"));
+
+    // Default translation target: the device language when it is supported, otherwise English.
+    public static String getDefaultTranslationTargetLanguage() {
+        String deviceLanguage = Locale.getDefault().getLanguage();
+        if (deviceLanguage != null) {
+            String normalized = deviceLanguage.trim().toLowerCase(Locale.US);
+            if (SUPPORTED_TRANSLATION_TARGETS.contains(normalized)) {
+                return normalized;
+            }
+        }
+        return "en";
     }
 
     public SubtitleGenerator(Context context) {
@@ -1772,18 +1796,12 @@ public class SubtitleGenerator {
         if (VAD_MODEL_SILERO.equals(vadModel)) {
             return detectSpeechWindowsWithSilero(audioFile, totalSamples, vadAggressiveness);
         }
-        if (VAD_MODEL_YAMNET.equals(vadModel)) {
-            return detectSpeechWindowsWithYamnet(audioFile, totalSamples, vadAggressiveness);
-        }
         return detectSpeechWindowsWithWebRtc(audioFile, totalSamples, vadAggressiveness);
     }
 
     private String normalizeVadModel(String vadModel) {
         if (VAD_MODEL_SILERO.equalsIgnoreCase(vadModel)) {
             return VAD_MODEL_SILERO;
-        }
-        if (VAD_MODEL_YAMNET.equalsIgnoreCase(vadModel)) {
-            return VAD_MODEL_YAMNET;
         }
         return VAD_MODEL_WEBRTC;
     }
@@ -1818,15 +1836,6 @@ public class SubtitleGenerator {
         return com.konovalov.vad.silero.config.Mode.VERY_AGGRESSIVE;
     }
 
-    private com.konovalov.vad.yamnet.config.Mode toYamnetVadMode(String aggressiveness) {
-        if (VAD_AGGRESSIVENESS_NORMAL.equals(aggressiveness)) {
-            return com.konovalov.vad.yamnet.config.Mode.NORMAL;
-        }
-        if (VAD_AGGRESSIVENESS_AGGRESSIVE.equals(aggressiveness)) {
-            return com.konovalov.vad.yamnet.config.Mode.AGGRESSIVE;
-        }
-        return com.konovalov.vad.yamnet.config.Mode.VERY_AGGRESSIVE;
-    }
 
     private List<SpeechWindow> detectSpeechWindowsWithWebRtc(File audioFile,
                                                              long totalSamples,
@@ -1956,79 +1965,6 @@ public class SubtitleGenerator {
                 vad.close();
             } catch (Throwable e) {
                 Log.w(TAG, "Error closing Silero VAD", e);
-            }
-        }
-
-        if (currentSpeechStartSample >= 0) {
-            appendSpeechWindow(windows, currentSpeechStartSample, currentSpeechEndSample, totalSamples);
-        }
-        return windows;
-    }
-
-    private List<SpeechWindow> detectSpeechWindowsWithYamnet(File audioFile,
-                                                             long totalSamples,
-                                                             String vadAggressiveness) throws IOException {
-        List<SpeechWindow> windows = new ArrayList<>();
-        if (totalSamples <= 0) {
-            return windows;
-        }
-
-        com.konovalov.vad.yamnet.VadYamnet vad = com.konovalov.vad.yamnet.Vad.builder()
-                .setContext(context)
-                .setSampleRate(com.konovalov.vad.yamnet.config.SampleRate.SAMPLE_RATE_16K)
-                .setFrameSize(com.konovalov.vad.yamnet.config.FrameSize.FRAME_SIZE_975)
-                .setMode(toYamnetVadMode(vadAggressiveness))
-                .setSpeechDurationMs(YAMNET_VAD_SPEECH_DURATION_MS)
-                .setSilenceDurationMs(YAMNET_VAD_SILENCE_DURATION_MS)
-                .build();
-
-        long paddingSamples = msToSamples(VAD_PADDING_MS);
-        long currentSpeechStartSample = -1;
-        long currentSpeechEndSample = -1;
-        long frameStartSample = 0;
-        int frameBytes = YAMNET_VAD_FRAME_SAMPLES * 2;
-
-        try (FileInputStream inputStream = new FileInputStream(audioFile)) {
-            skipFully(inputStream, WAV_HEADER_BYTES);
-            byte[] frame = new byte[frameBytes];
-            float[] floatFrame = new float[YAMNET_VAD_FRAME_SAMPLES];
-
-            while (!isCancelled && frameStartSample < totalSamples) {
-                int bytesRead = readFrame(inputStream, frame);
-                if (bytesRead <= 0) {
-                    break;
-                }
-                if (bytesRead < frameBytes) {
-                    for (int i = bytesRead; i < frameBytes; i++) {
-                        frame[i] = 0;
-                    }
-                }
-
-                long actualFrameSamples = Math.min(YAMNET_VAD_FRAME_SAMPLES, totalSamples - frameStartSample);
-                fillPcm16LeFloatFrame(frame, floatFrame);
-                com.konovalov.vad.yamnet.SoundCategory speechCategory =
-                        vad.classifyAudio("Speech", floatFrame);
-                boolean isSpeech = speechCategory != null
-                        && "Speech".equals(speechCategory.getLabel());
-                if (isSpeech) {
-                    if (currentSpeechStartSample < 0) {
-                        currentSpeechStartSample = Math.max(0, frameStartSample - paddingSamples);
-                    }
-                    currentSpeechEndSample = Math.min(totalSamples,
-                            frameStartSample + actualFrameSamples + paddingSamples);
-                } else if (currentSpeechStartSample >= 0) {
-                    appendSpeechWindow(windows, currentSpeechStartSample, currentSpeechEndSample, totalSamples);
-                    currentSpeechStartSample = -1;
-                    currentSpeechEndSample = -1;
-                }
-
-                frameStartSample += actualFrameSamples;
-            }
-        } finally {
-            try {
-                vad.close();
-            } catch (Throwable e) {
-                Log.w(TAG, "Error closing Yamnet VAD", e);
             }
         }
 
@@ -2176,15 +2112,9 @@ public class SubtitleGenerator {
                 }
                 long compactSegmentStartMs = startMs * 10;
                 long compactSegmentEndMs = endMs * 10;
-                long segmentStartMs = timeMapper == null
-                        ? chunkOffsetMs + compactSegmentStartMs
-                        : timeMapper.mapCompactMsToOriginalMs(compactSegmentStartMs);
-                long segmentEndMs = timeMapper == null
-                        ? chunkOffsetMs + compactSegmentEndMs
-                        : timeMapper.mapCompactMsToOriginalMs(compactSegmentEndMs);
                 List<WordTiming> timedWords = parseWhisperTokenTimings(
                         tokenTimingsJson, chunkOffsetMs, timeMapper,
-                        segmentStartMs, segmentEndMs, displayText);
+                        compactSegmentStartMs, compactSegmentEndMs, displayText);
                 if (VERBOSE_SUBTITLE_LOGS && !timedWords.isEmpty()) {
                     Log.d(TAG, "Whisper word timing range: startMs=" + timedWords.get(0).getStartMs()
                             + ", endMs=" + timedWords.get(timedWords.size() - 1).getEndMs()
@@ -2257,12 +2187,12 @@ public class SubtitleGenerator {
                 long startMs = token.optLong("startMs", -1);
                 long endMs = token.optLong("endMs", -1);
                 if (timeMapper != null && startMs >= 0) {
-                    startMs = timeMapper.mapCompactMsToOriginalMs(startMs);
+                    startMs = timeMapper.mapCompactMsToOriginalMs(startMs, false);
                 } else if (startMs >= 0) {
                     startMs += tokenOffsetMs;
                 }
                 if (timeMapper != null && endMs >= 0) {
-                    endMs = timeMapper.mapCompactMsToOriginalMs(endMs);
+                    endMs = timeMapper.mapCompactMsToOriginalMs(endMs, true);
                 } else if (endMs >= 0) {
                     endMs += tokenOffsetMs;
                 }
@@ -2566,6 +2496,7 @@ public class SubtitleGenerator {
         private float[] audioData;
         private int sampleCount;
         private long firstOriginalSample = -1;
+        private long lastOriginalEndSample = -1;
         private final TimeMapper timeMapper = new TimeMapper();
 
         private WhisperVadBatchBuilder(int initialCapacity) {
@@ -2587,10 +2518,19 @@ public class SubtitleGenerator {
             if (firstOriginalSample < 0) {
                 firstOriginalSample = originalStartSample;
             }
-            ensureCapacity(sampleCount + samples.length);
+            // Whisper needs an audible pause at each skipped-silence seam, otherwise it
+            // merges words across windows and misplaces timestamps around the seam.
+            boolean needsSeparator = sampleCount > 0 && originalStartSample != lastOriginalEndSample;
+            int separatorSamples = needsSeparator ? VAD_BATCH_SEPARATOR_SAMPLES : 0;
+            ensureCapacity(sampleCount + separatorSamples + samples.length);
+            if (needsSeparator) {
+                Arrays.fill(audioData, sampleCount, sampleCount + separatorSamples, 0.0f);
+                sampleCount += separatorSamples;
+            }
             System.arraycopy(samples, 0, audioData, sampleCount, samples.length);
             timeMapper.addRange(sampleCount, samples.length, originalStartSample);
             sampleCount += samples.length;
+            lastOriginalEndSample = originalStartSample + samples.length;
         }
 
         private WhisperVadBatch build() {
@@ -2621,30 +2561,48 @@ public class SubtitleGenerator {
                     compactStartSample + sampleCount,
                     originalStartSample));
         }
-
-        private long mapCompactMsToOriginalMs(long compactMs) {
+        private long mapCompactMsToOriginalMs(long compactMs, boolean isEndTimestamp) {
             long compactSample = compactMs * WHISPER_SAMPLE_RATE / 1000L;
-            return mapCompactSampleToOriginalSample(compactSample) * 1000L / WHISPER_SAMPLE_RATE;
+            return mapCompactSampleToOriginalSample(compactSample, isEndTimestamp)
+                    * 1000L / WHISPER_SAMPLE_RATE;
         }
 
-        private long mapCompactSampleToOriginalSample(long compactSample) {
+        // Samples in a separator gap belong to no range: an end timestamp there must clamp
+        // back to the previous window's end and a start timestamp forward to the next
+        // window's start, otherwise subtitles bleed across the skipped silence.
+        private long mapCompactSampleToOriginalSample(long compactSample, boolean isEndTimestamp) {
             if (ranges.isEmpty()) {
                 return compactSample;
             }
+            TimeMapRange previous = null;
             for (TimeMapRange range : ranges) {
-                if (compactSample >= range.compactStartSample && compactSample < range.compactEndSample) {
+                if (compactSample < range.compactStartSample) {
+                    if (isEndTimestamp && previous != null) {
+                        return previous.originalStartSample
+                                + previous.compactEndSample
+                                - previous.compactStartSample;
+                    }
+                    return range.originalStartSample;
+                }
+                if (compactSample < range.compactEndSample) {
                     return range.originalStartSample + compactSample - range.compactStartSample;
                 }
+                if (isEndTimestamp && compactSample == range.compactEndSample) {
+                    return range.originalStartSample
+                            + range.compactEndSample
+                            - range.compactStartSample;
+                }
+                previous = range;
             }
             TimeMapRange lastRange = ranges.get(ranges.size() - 1);
-            if (compactSample >= lastRange.compactEndSample) {
-                return lastRange.originalStartSample
-                        + lastRange.compactEndSample
-                        - lastRange.compactStartSample;
-            }
-            TimeMapRange firstRange = ranges.get(0);
-            return firstRange.originalStartSample;
+            return lastRange.originalStartSample
+                    + lastRange.compactEndSample
+                    - lastRange.compactStartSample;
         }
+
+
+
+
     }
 
     private static class TimeMapRange {

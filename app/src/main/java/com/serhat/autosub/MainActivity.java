@@ -34,6 +34,8 @@ import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final int VAD_PROMPT_THRESHOLD_MINUTES = 10;
+
     private ActivityMainBinding binding;
     private MainViewModel viewModel;
 
@@ -335,7 +337,7 @@ public class MainActivity extends AppCompatActivity {
         if (viewModel.shouldShowShortsDialog(uris, this::isVerticalVideo)) {
             showShortsDialog(uris);
         } else {
-            viewModel.addVideosToQueue(uris, this::getDisplayName, this::isVerticalVideo);
+            maybeShowVadDialog(uris);
         }
     }
 
@@ -352,8 +354,66 @@ public class MainActivity extends AppCompatActivity {
                                 "Create normal subtitle lines. Better for readability and longer speech.")
                 }, "Don't show this again", false, (which, checked) -> {
                     viewModel.setShortsTranscriptionPreferences(which == 0, checked);
-                    viewModel.addVideosToQueue(uris, this::getDisplayName, this::isVerticalVideo);
+                    maybeShowVadDialog(uris);
                 });
+    }
+
+    private void maybeShowVadDialog(List<Uri> uris) {
+        boolean vadAlreadyOn = Boolean.TRUE.equals(viewModel.getWhisperVadEnabled().getValue());
+        if (!vadAlreadyOn && hasLongVideo(uris)) {
+            showVadSpeedupDialog(uris);
+        } else {
+            viewModel.addVideosToQueue(uris, this::getDisplayName, this::isVerticalVideo);
+        }
+    }
+
+    private void showVadSpeedupDialog(List<Uri> uris) {
+        AppOptionDialog.show(this,
+                "Long video detected",
+                "This video is longer than " + VAD_PROMPT_THRESHOLD_MINUTES + " minutes. AutoSub can skip silent"
+                        + " stretches to finish faster, but skipping audio can occasionally drop quiet speech or"
+                        + " shift some subtitle timings.",
+                new AppOptionDialog.Option[]{
+                        new AppOptionDialog.Option(R.drawable.ri_time_line,
+                                "Skip silence (faster)",
+                                "Speeds up processing by skipping silent parts. May miss some dialog or shift timings."),
+                        new AppOptionDialog.Option(R.drawable.ri_checkbox_circle_line,
+                                "Full accuracy",
+                                "Processes the entire audio. Slower, but the most reliable timings and dialog.")
+                }, which -> viewModel.addVideosToQueue(uris, this::getDisplayName,
+                        this::isVerticalVideo, which == 0));
+    }
+
+    private boolean hasLongVideo(List<Uri> uris) {
+        for (Uri uri : uris) {
+            if (getVideoDurationMs(uri) > VAD_PROMPT_THRESHOLD_MINUTES * 60_000L) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private long getVideoDurationMs(Uri uri) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(this, uri);
+            return parseMetadataLong(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION));
+        } catch (Exception e) {
+            return 0;
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private long parseMetadataLong(String value) {
+        try {
+            return value == null ? 0 : Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     // --- Resolver Helpers ---

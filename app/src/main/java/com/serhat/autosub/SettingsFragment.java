@@ -13,6 +13,7 @@ import androidx.fragment.app.Fragment;
 import androidx.lifecycle.ViewModelProvider;
 
 import com.serhat.autosub.databinding.FragmentSettingsBinding;
+import com.whispercpp.whisper.WhisperCpuConfig;
 
 public class SettingsFragment extends Fragment {
 
@@ -20,6 +21,9 @@ public class SettingsFragment extends Fragment {
     private MainViewModel viewModel;
     private boolean syncingExportLocation;
     private boolean syncingWhisperLanguage;
+    private boolean syncingWhisperThreadCount;
+    // Selectable thread counts: index 0 = "Auto" (0), then 1..N.
+    private int[] whisperThreadCountValues;
     private boolean syncingWhisperVadModel;
     private boolean syncingWhisperVadAggressiveness;
     private boolean syncingTranslationSourceLanguage;
@@ -27,14 +31,12 @@ public class SettingsFragment extends Fragment {
 
     private static final String[] WHISPER_VAD_MODEL_LABELS = {
             "WebRTC",
-            "Silero",
-            "Yamnet"
+            "Silero"
     };
 
     private static final String[] WHISPER_VAD_MODEL_VALUES = {
             SubtitleGenerator.VAD_MODEL_WEBRTC,
-            SubtitleGenerator.VAD_MODEL_SILERO,
-            SubtitleGenerator.VAD_MODEL_YAMNET
+            SubtitleGenerator.VAD_MODEL_SILERO
     };
 
     private static final String[] WHISPER_VAD_AGGRESSIVENESS_LABELS = {
@@ -233,6 +235,8 @@ public class SettingsFragment extends Fragment {
             }
         });
 
+        setupWhisperThreadCountSpinner();
+
         ArrayAdapter<String> translationSourceAdapter = new ArrayAdapter<>(
                 requireContext(),
                 android.R.layout.simple_spinner_item,
@@ -379,6 +383,37 @@ public class SettingsFragment extends Fragment {
         });
     }
 
+    private void setupWhisperThreadCountSpinner() {
+        int maxThreads = WhisperCpuConfig.getMaxThreadCount();
+        whisperThreadCountValues = new int[maxThreads + 1];
+        String[] labels = new String[maxThreads + 1];
+        whisperThreadCountValues[0] = 0;
+        labels[0] = "Auto";
+        for (int i = 1; i <= maxThreads; i++) {
+            whisperThreadCountValues[i] = i;
+            labels[i] = i + (i == 1 ? " thread" : " threads");
+        }
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(
+                requireContext(),
+                android.R.layout.simple_spinner_item,
+                labels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        binding.whisperThreadCountSpinner.setAdapter(adapter);
+        binding.whisperThreadCountSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (!syncingWhisperThreadCount && position >= 0 && position < whisperThreadCountValues.length) {
+                    viewModel.setWhisperThreadCount(whisperThreadCountValues[position]);
+                }
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+    }
+
     private void observeViewModel() {
         viewModel.getBatchFormat().observe(getViewLifecycleOwner(), format -> {
             binding.batchFormatToggle.check("vtt".equalsIgnoreCase(format) ? R.id.batchVttBT : R.id.batchSrtBT);
@@ -456,6 +491,12 @@ public class SettingsFragment extends Fragment {
             syncingWhisperLanguage = false;
         });
 
+        viewModel.getWhisperThreadCount().observe(getViewLifecycleOwner(), threadCount -> {
+            syncingWhisperThreadCount = true;
+            binding.whisperThreadCountSpinner.setSelection(indexOfThreadCount(threadCount));
+            syncingWhisperThreadCount = false;
+        });
+
         viewModel.getTranslateSubtitles().observe(getViewLifecycleOwner(), enabled -> {
             boolean checked = Boolean.TRUE.equals(enabled);
             binding.translateSubtitlesSwitch.setChecked(checked);
@@ -481,6 +522,18 @@ public class SettingsFragment extends Fragment {
         String normalizedLanguage = language == null ? "auto" : language;
         for (int i = 0; i < WHISPER_LANGUAGE_CODES.length; i++) {
             if (WHISPER_LANGUAGE_CODES[i].equalsIgnoreCase(normalizedLanguage)) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private int indexOfThreadCount(Integer threadCount) {
+        if (threadCount == null || whisperThreadCountValues == null) {
+            return 0;
+        }
+        for (int i = 0; i < whisperThreadCountValues.length; i++) {
+            if (whisperThreadCountValues[i] == threadCount) {
                 return i;
             }
         }
