@@ -35,6 +35,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         void onPlay(QueueItem item);
         void onPreview(QueueItem item);
         void onTranslate(QueueItem item);
+        void onCreateShorts(QueueItem item);
         default void onSelectionChanged() {}
         default void onLongPress(QueueItem item) {}
     }
@@ -148,7 +149,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
     class QueueViewHolder extends RecyclerView.ViewHolder {
         TextView titleTV, statusTV, outputTV;
         LinearProgressIndicator progressIndicator;
-        MaterialButton retryBT, removeBT, exportVideoBT, exportSubtitleBT, shareBT, playBT;
+        MaterialButton retryBT, removeBT, exportVideoBT, exportSubtitleBT, shareBT, playBT, createShortsBT;
         android.widget.ImageView queueThumbIV;
         android.widget.ImageButton queueEditBT, queueTranslateBT;
         android.widget.CheckBox queueSelectCB;
@@ -166,6 +167,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             exportSubtitleBT = itemView.findViewById(R.id.queueExportSubtitleBT);
             shareBT = itemView.findViewById(R.id.queueShareBT);
             playBT = itemView.findViewById(R.id.queuePlayBT);
+            createShortsBT = itemView.findViewById(R.id.queueCreateShortsBT);
             queueThumbIV = itemView.findViewById(R.id.queueThumbIV);
             queueEditBT = itemView.findViewById(R.id.queueEditBT);
             queueTranslateBT = itemView.findViewById(R.id.queueTranslateBT);
@@ -203,6 +205,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             exportVideoBT.setVisibility(completed && !selectionMode ? View.VISIBLE : View.GONE);
             exportSubtitleBT.setVisibility(completed && !selectionMode ? View.VISIBLE : View.GONE);
             shareBT.setVisibility(completed && !selectionMode ? View.VISIBLE : View.GONE);
+            createShortsBT.setVisibility(completed && !selectionMode && !item.getSubtitles().isEmpty() ? View.VISIBLE : View.GONE);
             
             boolean hasVideo = !item.getSoftVideoPath().isEmpty() || !item.getHardVideoPath().isEmpty();
             playBT.setVisibility(completed && hasVideo && !selectionMode ? View.VISIBLE : View.GONE);
@@ -235,6 +238,9 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             });
             playBT.setOnClickListener(v -> {
                 if (listener != null) listener.onPlay(item);
+            });
+            createShortsBT.setOnClickListener(v -> {
+                if (listener != null) listener.onCreateShorts(item);
             });
             
             // Edit button and item card click

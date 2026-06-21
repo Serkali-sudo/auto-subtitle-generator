@@ -47,6 +47,8 @@ public class MainViewModel extends AndroidViewModel {
     private final SubtitleGenerator subtitleGenerator;
     private final QueueStore queueStore;
     private final ExportStore exportStore;
+    private final GemmaModelManager gemmaModelManager;
+    private final ShortsProjectStore shortsProjectStore;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private static final String PREFS_SETTINGS = "autosub_settings";
@@ -80,6 +82,11 @@ public class MainViewModel extends AndroidViewModel {
     private final MutableLiveData<String> activeDownloadEtaText = new MutableLiveData<>("");
     private final MutableLiveData<Boolean> activeDownloadPaused = new MutableLiveData<>(false);
     private final MutableLiveData<List<String>> queuedDownloadModelIds = new MutableLiveData<>(new ArrayList<>());
+    private final MutableLiveData<Boolean> gemmaInstalled = new MutableLiveData<>(false);
+    private final MutableLiveData<Boolean> gemmaDownloading = new MutableLiveData<>(false);
+    private final MutableLiveData<Integer> gemmaDownloadProgress = new MutableLiveData<>(0);
+    private final MutableLiveData<String> gemmaDownloadStatus = new MutableLiveData<>("");
+    private final MutableLiveData<Boolean> gemmaDownloadPaused = new MutableLiveData<>(false);
     private final List<VoskModelInfo> downloadQueue = new ArrayList<>();
 
     private final MutableLiveData<List<QueueItem>> queueItems = new MutableLiveData<>(new ArrayList<>());
@@ -122,6 +129,10 @@ public class MainViewModel extends AndroidViewModel {
     // Navigation and screen command trigger
     private final MutableLiveData<Integer> activeNavigationTab = new MutableLiveData<>(R.id.nav_generate);
     private final MutableLiveData<Boolean> navigateToPreviewTrigger = new MutableLiveData<>(false);
+    private final MutableLiveData<Boolean> navigateToShortsTrigger = new MutableLiveData<>(false);
+    private final MutableLiveData<ShortsProject> shortsProject = new MutableLiveData<>(null);
+    private final MutableLiveData<Boolean> shortsAnalyzing = new MutableLiveData<>(false);
+    private final MutableLiveData<String> shortsError = new MutableLiveData<>("");
     
     private final MutableLiveData<String> ramUsage = new MutableLiveData<>("RAM: -- MB");
 
@@ -182,6 +193,34 @@ public class MainViewModel extends AndroidViewModel {
                 refreshModels(currentQuery, currentCheckedChipId);
             });
         }
+
+        @Override
+        public void onGemmaStateChanged(boolean installed, boolean downloading, int progress,
+                                        String speed, String eta, boolean paused, String error) {
+            handler.post(() -> {
+                gemmaInstalled.setValue(installed);
+                gemmaDownloading.setValue(downloading);
+                gemmaDownloadProgress.setValue(progress);
+                gemmaDownloadPaused.setValue(paused);
+                String status = error == null || error.isEmpty()
+                        ? ((speed == null ? "" : speed) + (eta == null || eta.isEmpty() ? "" : " • " + eta)).trim()
+                        : error;
+                gemmaDownloadStatus.setValue(status);
+            });
+        }
+
+        @Override
+        public void onShortsProjectChanged(ShortsProject project, String error) {
+            handler.post(() -> {
+                boolean shouldNavigate = Boolean.TRUE.equals(shortsAnalyzing.getValue()) || shortsProject.getValue() == null;
+                shortsAnalyzing.setValue(false);
+                shortsError.setValue(error == null ? "" : error);
+                if (project != null) {
+                    shortsProject.setValue(project);
+                    if (shouldNavigate) navigateToShortsTrigger.setValue(true);
+                }
+            });
+        }
     };
 
     private final ServiceConnection taskServiceConnection = new ServiceConnection() {
@@ -213,6 +252,8 @@ public class MainViewModel extends AndroidViewModel {
         subtitleGenerator = new SubtitleGenerator(application);
         queueStore = new QueueStore(application);
         exportStore = new ExportStore(application);
+        gemmaModelManager = new GemmaModelManager(application);
+        shortsProjectStore = new ShortsProjectStore(application);
         settingsPrefs = application.getSharedPreferences(PREFS_SETTINGS, android.content.Context.MODE_PRIVATE);
         loadSettings();
 
@@ -220,6 +261,7 @@ public class MainViewModel extends AndroidViewModel {
         loadCatalog();
         loadQueueItemsFromDb();
         startRamUsagePolling();
+        gemmaInstalled.setValue(gemmaModelManager.isInstalled());
     }
 
     private void bindTaskService() {
@@ -250,6 +292,12 @@ public class MainViewModel extends AndroidViewModel {
     private void applyTaskState(AutoSubTaskState state) {
         if (state == null) return;
         queueRunning.setValue(state.isQueueRunning());
+        shortsAnalyzing.setValue(state.getTaskType() == AutoSubTaskState.TaskType.SHORTS_ANALYSIS
+                || state.getTaskType() == AutoSubTaskState.TaskType.GEMMA_MODEL_LOAD);
+        if (state.getTaskType() == AutoSubTaskState.TaskType.SHORTS_ANALYSIS
+                || state.getTaskType() == AutoSubTaskState.TaskType.GEMMA_MODEL_LOAD) {
+            generalStatusText.setValue(state.getMessage());
+        }
         activeDownloadModelId.setValue(state.getActiveDownloadModelId());
         if (state.getTaskType() == AutoSubTaskState.TaskType.MODEL_DOWNLOAD) {
             activeDownloadProgress.setValue(Math.max(0, state.getProgress()));
@@ -296,6 +344,11 @@ public class MainViewModel extends AndroidViewModel {
     public LiveData<String> getActiveDownloadEtaText() { return activeDownloadEtaText; }
     public LiveData<Boolean> getActiveDownloadPaused() { return activeDownloadPaused; }
     public LiveData<List<String>> getQueuedDownloadModelIds() { return queuedDownloadModelIds; }
+    public LiveData<Boolean> getGemmaInstalled() { return gemmaInstalled; }
+    public LiveData<Boolean> getGemmaDownloading() { return gemmaDownloading; }
+    public LiveData<Integer> getGemmaDownloadProgress() { return gemmaDownloadProgress; }
+    public LiveData<String> getGemmaDownloadStatus() { return gemmaDownloadStatus; }
+    public LiveData<Boolean> getGemmaDownloadPaused() { return gemmaDownloadPaused; }
     
     public LiveData<List<QueueItem>> getQueueItems() { return queueItems; }
     public LiveData<Boolean> getQueueRunning() { return queueRunning; }
@@ -332,6 +385,11 @@ public class MainViewModel extends AndroidViewModel {
 
     public LiveData<Integer> getActiveNavigationTab() { return activeNavigationTab; }
     public LiveData<Boolean> getNavigateToPreviewTrigger() { return navigateToPreviewTrigger; }
+    public LiveData<Boolean> getNavigateToShortsTrigger() { return navigateToShortsTrigger; }
+    public LiveData<ShortsProject> getShortsProject() { return shortsProject; }
+    public LiveData<Boolean> getShortsAnalyzing() { return shortsAnalyzing; }
+    public LiveData<String> getShortsError() { return shortsError; }
+    public void consumeShortsError() { shortsError.setValue(""); }
     public LiveData<String> getRamUsage() { return ramUsage; }
 
     public VoskModelManager getModelManager() { return modelManager; }
@@ -385,6 +443,80 @@ public class MainViewModel extends AndroidViewModel {
 
     public void consumeNavigateToPreviewTrigger() {
         navigateToPreviewTrigger.setValue(false);
+    }
+
+    public interface ShortsProjectCallback { void onLoaded(ShortsProject project); }
+
+    public void consumeNavigateToShortsTrigger() { navigateToShortsTrigger.setValue(false); }
+
+    public boolean isGemmaLowMemoryDevice() { return gemmaModelManager.isLowMemoryDevice(); }
+    public boolean isShortsAiSupported() { return ShortsLlmEngineFactory.isSupported(); }
+
+    public void startGemmaDownload() {
+        runWhenTaskServiceReady(true, () -> taskService.startGemmaDownload());
+    }
+
+    public void pauseGemmaDownload() {
+        runWhenTaskServiceReady(false, () -> taskService.pauseGemmaDownload());
+    }
+
+    public void cancelGemmaDownload() {
+        runWhenTaskServiceReady(false, () -> taskService.cancelGemmaDownload());
+    }
+
+    public void deleteGemmaModel() {
+        runWhenTaskServiceReady(false, () -> taskService.deleteGemmaModel());
+    }
+
+    public void prepareShorts(QueueItem item) {
+        if (item == null) return;
+        selectedQueueItem.setValue(item);
+        currentVideoUri.setValue(item.getVideoUri());
+        subtitleEntries.setValue(item.getSubtitles());
+        runWhenTaskServiceReady(false, () -> {
+            ShortsProject existing = taskService.getShortsProject(item.getId());
+            handler.post(() -> {
+                shortsProject.setValue(existing);
+                if (existing != null) navigateToShortsTrigger.setValue(true);
+            });
+        });
+    }
+
+    public void loadShortsProject(QueueItem item, ShortsProjectCallback callback) {
+        if (item == null) { callback.onLoaded(null); return; }
+        selectedQueueItem.setValue(item);
+        currentVideoUri.setValue(item.getVideoUri());
+        subtitleEntries.setValue(item.getSubtitles());
+        runWhenTaskServiceReady(false, () -> {
+            ShortsProject project = taskService.getShortsProject(item.getId());
+            handler.post(() -> callback.onLoaded(project));
+        });
+    }
+
+    public void analyzeShorts(QueueItem item, int count, int minSeconds, int maxSeconds, String focus,
+                              boolean preferGpu) {
+        if (item == null) return;
+        selectedQueueItem.setValue(item);
+        currentVideoUri.setValue(item.getVideoUri());
+        subtitleEntries.setValue(item.getSubtitles());
+        shortsError.setValue("");
+        shortsAnalyzing.setValue(true);
+        runWhenTaskServiceReady(true, () -> taskService.analyzeShorts(item, count, minSeconds, maxSeconds,
+                focus, preferGpu));
+    }
+
+    public void saveShortsProject(ShortsProject project) {
+        if (project == null) return;
+        shortsProject.setValue(project);
+        runWhenTaskServiceReady(false, () -> taskService.saveShortsProject(project));
+    }
+
+    public void exportShorts(File outputDir) {
+        QueueItem item = selectedQueueItem.getValue();
+        ShortsProject project = shortsProject.getValue();
+        if (item == null || project == null) return;
+        saveShortsProject(project);
+        runWhenTaskServiceReady(true, () -> taskService.exportShorts(item, project, outputDir));
     }
 
     // --- Settings Setter ---
@@ -1361,6 +1493,7 @@ public class MainViewModel extends AndroidViewModel {
     }
 
     public void retryQueueItem(QueueItem item) {
+        shortsProjectStore.deleteForQueueItem(item.getId());
         item.setStatus(QueueItem.Status.PENDING);
         item.setProgress(0);
         item.setMessage("");
@@ -1390,6 +1523,7 @@ public class MainViewModel extends AndroidViewModel {
         if (current != null) {
             removeQueueItemFromList(current, item);
             queueStore.deleteItem(item.getId());
+            shortsProjectStore.deleteForQueueItem(item.getId());
             queueItems.setValue(new ArrayList<>(current));
         }
         if (item == selectedQueueItem.getValue()) {
@@ -1427,6 +1561,7 @@ public class MainViewModel extends AndroidViewModel {
                     }
                     removeQueueItemFromList(current, item);
                     queueStore.deleteItem(item.getId());
+                    shortsProjectStore.deleteForQueueItem(item.getId());
                     if (item == selectedQueueItem.getValue()) {
                         clearPreview();
                     }
@@ -2343,6 +2478,7 @@ public class MainViewModel extends AndroidViewModel {
             taskService = null;
         }
         stopRamUsagePolling();
+        shortsProjectStore.close();
         super.onCleared();
     }
 

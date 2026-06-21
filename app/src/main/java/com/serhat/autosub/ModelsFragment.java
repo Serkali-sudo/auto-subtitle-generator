@@ -44,6 +44,7 @@ public class ModelsFragment extends Fragment {
 
         setupAdapter();
         setupFilters();
+        setupGemmaActions();
         observeViewModel();
     }
 
@@ -101,6 +102,69 @@ public class ModelsFragment extends Fragment {
         binding.modelFilterChips.setOnCheckedStateChangeListener((group, checkedIds) -> refreshModels());
     }
 
+    private void setupGemmaActions() {
+        binding.gemmaActionBT.setOnClickListener(v -> {
+            boolean installed = Boolean.TRUE.equals(viewModel.getGemmaInstalled().getValue());
+            boolean downloading = Boolean.TRUE.equals(viewModel.getGemmaDownloading().getValue());
+            boolean paused = Boolean.TRUE.equals(viewModel.getGemmaDownloadPaused().getValue());
+            if (installed) {
+                new MaterialAlertDialogBuilder(requireContext())
+                        .setTitle("Delete Gemma 4 E2B")
+                        .setMessage("Remove the 2.6 GB local Shorts model? Saved candidate projects and exported clips are kept.")
+                        .setPositiveButton("Delete", (dialog, which) -> viewModel.deleteGemmaModel())
+                        .setNegativeButton("Cancel", null).show();
+            } else if (downloading) viewModel.pauseGemmaDownload();
+            else if (paused) viewModel.startGemmaDownload();
+            else confirmGemmaDownload();
+        });
+        binding.gemmaSecondaryBT.setOnClickListener(v -> viewModel.cancelGemmaDownload());
+    }
+
+    private void confirmGemmaDownload() {
+        if (!viewModel.isShortsAiSupported()) {
+            Toast.makeText(requireContext(), "Gemma Shorts requires Android 12 or newer", Toast.LENGTH_LONG).show();
+            return;
+        }
+        String memoryWarning = viewModel.isGemmaLowMemoryDevice()
+                ? "\n\nThis device reports less than 8 GB RAM. Model loading may be slow or fail."
+                : "";
+        new MaterialAlertDialogBuilder(requireContext())
+                .setTitle("Download Gemma 4 E2B")
+                .setMessage("Download approximately 2.6 GB from the LiteRT Community model repository. Keep the app connected to power for best results." + memoryWarning)
+                .setPositiveButton("Download", (dialog, which) -> viewModel.startGemmaDownload())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void updateGemmaCard() {
+        boolean supported = viewModel.isShortsAiSupported();
+        boolean installed = Boolean.TRUE.equals(viewModel.getGemmaInstalled().getValue());
+        boolean downloading = Boolean.TRUE.equals(viewModel.getGemmaDownloading().getValue());
+        boolean paused = Boolean.TRUE.equals(viewModel.getGemmaDownloadPaused().getValue());
+        int progress = viewModel.getGemmaDownloadProgress().getValue() == null ? 0 : viewModel.getGemmaDownloadProgress().getValue();
+        String detail = viewModel.getGemmaDownloadStatus().getValue();
+        binding.gemmaProgress.setVisibility((downloading || paused) ? View.VISIBLE : View.GONE);
+        binding.gemmaProgress.setProgress(Math.max(0, progress));
+        binding.gemmaActionBT.setEnabled(supported);
+        binding.gemmaSecondaryBT.setVisibility((downloading || paused) ? View.VISIBLE : View.GONE);
+        if (!supported) {
+            binding.gemmaStatusTV.setText("Requires Android 12 or newer");
+            binding.gemmaActionBT.setText("Unavailable");
+        } else if (installed) {
+            binding.gemmaStatusTV.setText("Installed • ready for transcript-based Shorts extraction");
+            binding.gemmaActionBT.setText("Delete");
+        } else if (downloading) {
+            binding.gemmaStatusTV.setText(progress + "%" + (detail == null || detail.isEmpty() ? "" : " • " + detail));
+            binding.gemmaActionBT.setText("Pause");
+        } else if (paused) {
+            binding.gemmaStatusTV.setText("Paused at " + progress + "%");
+            binding.gemmaActionBT.setText("Resume");
+        } else {
+            binding.gemmaStatusTV.setText(detail == null || detail.isEmpty() ? "2.6 GB • Android 12+ • text only" : detail);
+            binding.gemmaActionBT.setText("Download");
+        }
+    }
+
     private void refreshModels() {
         String query = binding.modelSearchInput.getText() == null ? "" : binding.modelSearchInput.getText().toString();
         int checkedChipId = binding.modelFilterChips.getCheckedChipId();
@@ -146,6 +210,11 @@ public class ModelsFragment extends Fragment {
         viewModel.getQueuedDownloadModelIds().observe(getViewLifecycleOwner(), queued -> {
             refreshModels();
         });
+        viewModel.getGemmaInstalled().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
+        viewModel.getGemmaDownloading().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
+        viewModel.getGemmaDownloadProgress().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
+        viewModel.getGemmaDownloadStatus().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
+        viewModel.getGemmaDownloadPaused().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
     }
 
     private void submitModelAdapter(List<VoskModelInfo> models) {

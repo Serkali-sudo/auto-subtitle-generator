@@ -20,6 +20,7 @@ Auto Subtitle Generator is an Android app for creating, editing, translating, an
 - Export subtitle files as SRT or VTT.
 - Export videos with soft subtitles or hard burned-in subtitles.
 - Create short-form styled captions, including word-by-word caption timing.
+- Use local Gemma 4 E2B to find, review, crop, and export Shorts from long-video transcripts.
 - Batch export subtitle files or captioned videos.
 - Track completed exports in an export library.
 
@@ -137,6 +138,12 @@ Settings include options for:
 - Uppercase short captions.
 - Word-by-word mode.
 - Skipping the shorts setup dialog.
+
+### AI Shorts extraction
+
+Completed queue items include a **Create Shorts** action on Android 12 and newer. The optional Gemma 4 E2B model analyzes the saved timestamped transcript entirely on-device and proposes five editable 20–60 second clips. The review screen supports clip selection, subtitle-snapped boundary edits, original/translated/bilingual hard captions, and a per-clip horizontal 9:16 crop. Selected clips export as 1080×1920 MP4 videos and appear in the export library.
+
+The LiteRT-LM model is approximately 2.6 GB and is managed from the Models screen with resumable downloads. Devices with less than 8 GB RAM receive a warning before loading it. Older Android versions retain all existing subtitle features but do not load the AI runtime.
 
 ### Model manager
 

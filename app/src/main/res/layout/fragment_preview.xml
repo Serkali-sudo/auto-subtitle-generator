@@ -99,7 +99,7 @@
             android:layout_width="20dp"
             android:layout_height="20dp"
             android:src="@drawable/ri_error_warning_line"
-            android:tint="#856404"
+            app:tint="#856404"
             android:layout_marginEnd="8dp" />
 
         <TextView

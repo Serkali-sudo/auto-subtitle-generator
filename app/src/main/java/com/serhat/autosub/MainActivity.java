@@ -170,6 +170,12 @@ public class MainActivity extends AppCompatActivity {
                 viewModel.consumeNavigateToPreviewTrigger();
             }
         });
+        viewModel.getNavigateToShortsTrigger().observe(this, trigger -> {
+            if (Boolean.TRUE.equals(trigger)) {
+                navigateToShortsReview();
+                viewModel.consumeNavigateToShortsTrigger();
+            }
+        });
     }
 
     private void navigateToTab(int itemId) {
@@ -257,6 +263,17 @@ public class MainActivity extends AppCompatActivity {
         }
         transaction.add(R.id.contentHost, new PreviewFragment(), "preview")
                 .addToBackStack("preview")
+                .commit();
+    }
+
+    private void navigateToShortsReview() {
+        binding.toolbar.setTitle("Shorts Review");
+        FragmentManager fm = getSupportFragmentManager();
+        Fragment active = fm.findFragmentByTag("generate");
+        androidx.fragment.app.FragmentTransaction transaction = fm.beginTransaction();
+        if (active != null && !active.isHidden()) transaction.hide(active);
+        transaction.add(R.id.contentHost, new ShortsReviewFragment(), "shorts_review")
+                .addToBackStack("shorts_review")
                 .commit();
     }
 

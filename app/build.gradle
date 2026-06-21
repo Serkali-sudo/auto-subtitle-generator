@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
 }
 
 android {
@@ -39,6 +40,9 @@ android {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
     }
+    kotlinOptions {
+        jvmTarget = '11'
+    }
 }
 
 dependencies {
@@ -60,6 +64,9 @@ dependencies {
     implementation "androidx.media3:media3-exoplayer:1.10.1"
     implementation "androidx.media3:media3-ui:1.10.1"
     implementation 'com.google.mlkit:translate:17.0.3'
+    implementation 'com.google.mlkit:face-detection:16.1.7'
+    implementation 'com.google.ai.edge.litertlm:litertlm-android:0.11.0'
+    implementation 'com.google.code.gson:gson:2.13.1'
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core

@@ -62,7 +62,7 @@
                         android:layout_width="36dp"
                         android:layout_height="36dp"
                         android:src="@drawable/ri_translate_2"
-                        android:tint="?attr/colorPrimary"
+                        app:tint="?attr/colorPrimary"
                         android:background="?attr/selectableItemBackgroundBorderless"
                         android:contentDescription="Translate subtitles" />
 
@@ -71,7 +71,7 @@
                         android:layout_width="36dp"
                         android:layout_height="36dp"
                         android:src="@drawable/ri_edit_line"
-                        android:tint="?attr/colorPrimary"
+                        app:tint="?attr/colorPrimary"
                         android:background="?attr/selectableItemBackgroundBorderless"
                         android:contentDescription="Edit in Preview" />
                 </LinearLayout>
@@ -116,6 +116,18 @@
                 android:layout_height="wrap_content"
                 android:gravity="end"
                 android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/queueCreateShortsBT"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:contentDescription="Create AI Shorts"
+                android:text="Create Shorts"
+                android:visibility="gone"
+                app:icon="@drawable/baseline_movie_24"
+                app:iconGravity="textStart"
+                app:iconPadding="4dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/queueExportVideoBT"

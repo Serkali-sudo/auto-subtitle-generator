@@ -375,17 +375,25 @@ public class SubtitleGenerator {
         return currentModelInfo;
     }
 
-    public void release() {
-        cancelGeneration();
+    /** Releases the active speech model without shutting down this generator's worker. */
+    public void unloadModel() {
+        final Model modelToRelease;
         final WhisperContext contextToRelease;
         synchronized (modelLock) {
             currentLoadSessionId++;
+            modelToRelease = model;
             contextToRelease = whisperContext;
-            whisperContext = null;
             model = null;
+            whisperContext = null;
             currentModelInfo = null;
         }
+        releasePreviousModel(modelToRelease);
         releasePreviousWhisperContext(contextToRelease);
+    }
+
+    public void release() {
+        cancelGeneration();
+        unloadModel();
         executorService.shutdown();
     }
 
@@ -1150,6 +1158,125 @@ public class SubtitleGenerator {
                 }
             }
         });
+    }
+
+    public void exportShortClip(Uri videoUri, List<SubtitleEntry> subtitles, ShortsCandidate candidate,
+                                File outputDir, ShortsSubtitleStyle style, VideoExportCallback callback) {
+        executorService.execute(() -> {
+            File assFile = null;
+            try {
+                if (candidate == null || candidate.getEndMs() <= candidate.getStartMs()) {
+                    callback.onError("Invalid Short clip range");
+                    return;
+                }
+                File exportDir = resolveOutputDir(outputDir);
+                String inputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri);
+                List<SubtitleEntry> rebased = rebaseClipSubtitles(subtitles, candidate.getStartMs(), candidate.getEndMs());
+                String filter = buildVerticalCropFilter(candidate);
+                if (candidate.isBurnCaptions() && !rebased.isEmpty()) {
+                    setupFontDirectories();
+                    assFile = new File(context.getCacheDir(), "short_" + candidate.getId() + "_" + System.nanoTime() + ".ass");
+                    try (FileOutputStream output = new FileOutputStream(assFile)) {
+                        ShortsSubtitleStyle effective = style == null
+                                ? new ShortsSubtitleStyle(0.5f, 0.72f, 30f, true, true, true)
+                                : style;
+                        if (candidate.getCaptionLayer() != SubtitleLayerMode.ORIGINAL && effective.isWordByWord()) {
+                            effective = new ShortsSubtitleStyle(effective.getX(), effective.getY(), effective.getTextSizeSp(),
+                                    effective.isUppercase(), false, true);
+                        }
+                        writeAssSubtitles(rebased, output, effective, resolveAssFontName(null), candidate.getCaptionLayer());
+                    }
+                    filter += ",ass='" + escapeFilterPath(assFile.getAbsolutePath()) + "'";
+                }
+
+                String base = "(short-" + Math.max(1, candidate.getId()) + ")_" + slug(candidate.getTitle());
+                if (base.endsWith("_")) base += "clip";
+                File output = uniqueOutputFile(exportDir, base, "mp4");
+                double start = candidate.getStartMs() / 1000d;
+                double duration = candidate.getDurationMs() / 1000d;
+                String common = String.format(Locale.US,
+                        "-y -ss %.3f -t %.3f -i %s -vf \"%s\" -c:a aac -b:a 192k -movflags +faststart ",
+                        start, duration, inputPath, filter);
+                callback.onProgressUpdate(-1);
+                FFmpegSession session = FFmpegKit.execute(common + "-c:v libx264 -preset veryfast -crf 20 '" + output.getAbsolutePath() + "'");
+                if (!ReturnCode.isSuccess(session.getReturnCode())) {
+                    session = FFmpegKit.execute(common + "-c:v mpeg4 -q:v 2 '" + output.getAbsolutePath() + "'");
+                }
+                if (ReturnCode.isSuccess(session.getReturnCode())) {
+                    callback.onProgressUpdate(100);
+                    callback.onVideoExported(output.getAbsolutePath());
+                } else {
+                    callback.onError("FFmpeg Short export failed: " + session.getLogsAsString());
+                }
+            } catch (Exception e) {
+                callback.onError(e.getMessage() == null ? "Short export failed" : e.getMessage());
+            } finally {
+                if (assFile != null && assFile.exists()) assFile.delete();
+            }
+        });
+    }
+
+    static String buildVerticalCropFilter(float cropPosition) {
+        float position = Math.max(0f, Math.min(1f, cropPosition));
+        return String.format(Locale.US,
+                "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(iw-ow)*%.4f:(ih-oh)/2,setsar=1",
+                position);
+    }
+
+    static String buildVerticalCropFilter(ShortsCandidate candidate) {
+        if (candidate == null || !candidate.hasAutoFraming()) {
+            return buildVerticalCropFilter(candidate == null ? 0.5f : candidate.getCropPosition());
+        }
+        String expression = buildCropPositionExpression(candidate.getCropKeyframes());
+        return "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:" +
+                "(iw-ow)*(" + expression + "):(ih-oh)/2,setsar=1";
+    }
+
+    static String buildCropPositionExpression(List<ShortsCropKeyframe> keyframes) {
+        if (keyframes == null || keyframes.isEmpty()) return "0.5000";
+        String expression = String.format(Locale.US, "%.4f",
+                keyframes.get(keyframes.size() - 1).getPosition());
+        for (int i = keyframes.size() - 2; i >= 0; i--) {
+            ShortsCropKeyframe left = keyframes.get(i);
+            ShortsCropKeyframe right = keyframes.get(i + 1);
+            expression = String.format(Locale.US, "if(lt(t\\,%.3f)\\,%s\\,%s)",
+                    right.getTimeMs() / 1000d,
+                    String.format(Locale.US, "%.4f", left.getPosition()), expression);
+        }
+        return expression;
+    }
+
+    private List<SubtitleEntry> rebaseClipSubtitles(List<SubtitleEntry> source, long clipStart, long clipEnd) {
+        List<SubtitleEntry> result = new ArrayList<>();
+        if (source == null) return result;
+        for (SubtitleEntry entry : source) {
+            long start = parseSubtitleTime(entry.getStartTime());
+            long end = parseSubtitleTime(entry.getEndTime());
+            if (end <= clipStart || start >= clipEnd) continue;
+            long localStart = Math.max(start, clipStart) - clipStart;
+            long localEnd = Math.min(end, clipEnd) - clipStart;
+            List<WordTiming> words = new ArrayList<>();
+            for (WordTiming word : entry.getWords()) {
+                if (word.getEndMs() <= clipStart || word.getStartMs() >= clipEnd) continue;
+                words.add(new WordTiming(word.getWord(), Math.max(word.getStartMs(), clipStart) - clipStart,
+                        Math.min(word.getEndMs(), clipEnd) - clipStart, word.getConfidence()));
+            }
+            SubtitleEntry copy = new SubtitleEntry(result.size() + 1, formatTime(localStart), formatTime(localEnd), entry.getText(), words);
+            copy.setTranslationText(entry.getTranslationText());
+            result.add(copy);
+        }
+        return result;
+    }
+
+    private File uniqueOutputFile(File directory, String base, String extension) {
+        File file = new File(directory, base + "." + extension);
+        int suffix = 2;
+        while (file.exists()) file = new File(directory, base + "-" + suffix++ + "." + extension);
+        return file;
+    }
+
+    private String escapeFilterPath(String path) {
+        return path.replace("\\", "/").replace(":", "\\:").replace("'", "\\'");
     }
 
     private File resolveOutputDir(File outputDir) throws IOException {

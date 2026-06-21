@@ -24,6 +24,7 @@ import androidx.fragment.app.Fragment;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.serhat.autosub.databinding.FragmentGenerateBinding;
 
 import java.io.File;
@@ -119,6 +120,11 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
             }
 
             @Override
+            public void onCreateShorts(QueueItem item) {
+                beginCreateShorts(item);
+            }
+
+            @Override
             public void onSelectionChanged() {
                 updateActionModeTitle();
             }
@@ -131,6 +137,91 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
         binding.queueRecyclerView.setLayoutManager(new LinearLayoutManager(requireContext()));
         binding.queueRecyclerView.setItemAnimator(null);
         binding.queueRecyclerView.setAdapter(queueAdapter);
+    }
+
+    private void beginCreateShorts(QueueItem item) {
+        if (!viewModel.isShortsAiSupported()) {
+            new MaterialAlertDialogBuilder(requireContext())
+                    .setTitle("Android 12 required")
+                    .setMessage("Local Gemma Shorts extraction requires Android 12 or newer. Subtitle generation remains available on this device.")
+                    .setPositiveButton("OK", null)
+                    .show();
+            return;
+        }
+        if (!Boolean.TRUE.equals(viewModel.getGemmaInstalled().getValue())) {
+            new MaterialAlertDialogBuilder(requireContext())
+                    .setTitle("Download Gemma 4 E2B")
+                    .setMessage("The local Shorts editor is about 2.6 GB. Download it from Models before analyzing this transcript.")
+                    .setPositiveButton("Open Models", (dialog, which) -> viewModel.setActiveNavigationTab(R.id.nav_models))
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            return;
+        }
+        Runnable continueAction = () -> viewModel.loadShortsProject(item, existing -> {
+            if (existing == null || existing.getCandidates().isEmpty()) showShortsAnalysisDialog(item);
+            else AppOptionDialog.show(requireContext(), "Shorts project found",
+                    "Review the saved candidates or run Gemma again with new instructions.",
+                    new AppOptionDialog.Option[]{
+                            new AppOptionDialog.Option("Review candidates", "Continue editing the saved Shorts project."),
+                            new AppOptionDialog.Option("Analyze again", "Replace it with a fresh set of candidates.")
+                    }, which -> {
+                        if (which == 0) {
+                            viewModel.prepareShorts(item);
+                        } else showShortsAnalysisDialog(item);
+                    });
+        });
+        if (viewModel.isGemmaLowMemoryDevice()) {
+            new MaterialAlertDialogBuilder(requireContext())
+                    .setTitle("Limited device memory")
+                    .setMessage("Gemma 4 E2B is designed for devices with at least 8 GB RAM. Loading it here may be slow or the system may close AutoSub.")
+                    .setPositiveButton("Try anyway", (dialog, which) -> continueAction.run())
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        } else continueAction.run();
+    }
+
+    private void showShortsAnalysisDialog(QueueItem item) {
+        int padding = Math.round(20 * getResources().getDisplayMetrics().density);
+        android.widget.LinearLayout layout = new android.widget.LinearLayout(requireContext());
+        layout.setOrientation(android.widget.LinearLayout.VERTICAL);
+        layout.setPadding(padding, 0, padding, 0);
+
+        android.widget.EditText count = numberField("Clip count", "5");
+        android.widget.EditText min = numberField("Minimum seconds", "20");
+        android.widget.EditText max = numberField("Maximum seconds", "60");
+        android.widget.EditText focus = new android.widget.EditText(requireContext());
+        focus.setHint("Optional focus, e.g. prioritize tutorials");
+        focus.setSingleLine(false);
+        focus.setMinLines(2);
+        android.widget.CheckBox responsiveCpu = new android.widget.CheckBox(requireContext());
+        responsiveCpu.setText("Use CPU to keep the interface responsive (slower)");
+        responsiveCpu.setChecked(false);
+        layout.addView(count); layout.addView(min); layout.addView(max); layout.addView(focus);
+        layout.addView(responsiveCpu);
+
+        new MaterialAlertDialogBuilder(requireContext())
+                .setTitle("Find the best Shorts")
+                .setMessage("Gemma will analyze the saved transcript locally. Transcript text is treated as data and never uploaded.")
+                .setView(layout)
+                .setPositiveButton("Analyze", (dialog, which) -> viewModel.analyzeShorts(item,
+                        parseInt(count, 5), parseInt(min, 20), parseInt(max, 60), focus.getText().toString(),
+                        !responsiveCpu.isChecked()))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private android.widget.EditText numberField(String hint, String value) {
+        android.widget.EditText field = new android.widget.EditText(requireContext());
+        field.setHint(hint);
+        field.setText(value);
+        field.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        field.setSelectAllOnFocus(true);
+        return field;
+    }
+
+    private int parseInt(android.widget.EditText field, int fallback) {
+        try { return Integer.parseInt(field.getText().toString().trim()); }
+        catch (Exception ignored) { return fallback; }
     }
 
     private void startSelectionMode(QueueItem item) {
@@ -742,6 +833,13 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
 
         viewModel.getShowRamUsage().observe(getViewLifecycleOwner(), show -> {
             binding.ramUsageTV.setVisibility(Boolean.TRUE.equals(show) ? View.VISIBLE : View.GONE);
+        });
+
+        viewModel.getShortsError().observe(getViewLifecycleOwner(), error -> {
+            if (error != null && !error.isEmpty()) {
+                Toast.makeText(requireContext(), error, Toast.LENGTH_LONG).show();
+                viewModel.consumeShortsError();
+            }
         });
     }
 

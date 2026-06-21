@@ -13,7 +13,11 @@ public final class AutoSubTaskState {
         SUBTITLE_SAVE,
         VIDEO_EXPORT,
         BATCH_SUBTITLE_SAVE,
-        BATCH_VIDEO_EXPORT
+        BATCH_VIDEO_EXPORT,
+        GEMMA_MODEL_DOWNLOAD,
+        GEMMA_MODEL_LOAD,
+        SHORTS_ANALYSIS,
+        SHORTS_EXPORT
     }
 
     private final TaskType taskType;

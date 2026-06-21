@@ -12,6 +12,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -29,11 +30,15 @@ import java.util.Locale;
 import java.util.Set;
 
 public class AutoSubTaskService extends Service {
+    private static final String SHORTS_TAG = "AutoSubShorts";
     public interface Listener {
         void onTaskStateChanged(AutoSubTaskState state);
         void onQueueItemsChanged(List<QueueItem> items);
         void onModelStateChanged(boolean ready, VoskModelInfo selectedModel, String statusText, String generalText);
         void onCatalogShouldRefresh();
+        default void onGemmaStateChanged(boolean installed, boolean downloading, int progress,
+                                         String speed, String eta, boolean paused, String error) {}
+        default void onShortsProjectChanged(ShortsProject project, String error) {}
     }
 
     public static final String ACTION_CANCEL_MEDIA = "com.serhat.autosub.CANCEL_MEDIA";
@@ -69,9 +74,20 @@ public class AutoSubTaskService extends Service {
     private SubtitleGenerator subtitleGenerator;
     private QueueStore queueStore;
     private ExportStore exportStore;
+    private GemmaModelManager gemmaModelManager;
+    private ShortsProjectStore shortsProjectStore;
     private android.content.SharedPreferences settingsPrefs;
 
     private VoskModelManager.DownloadTask activeDownloadTask;
+    private GemmaModelManager.DownloadTask activeGemmaDownloadTask;
+    private ShortsLlmEngine activeShortsEngine;
+    private boolean shortsAnalyzing;
+    private boolean shortsExportCancelRequested;
+    private int gemmaDownloadProgress;
+    private String gemmaDownloadSpeed = "";
+    private String gemmaDownloadEta = "";
+    private boolean gemmaDownloadPaused;
+    private String gemmaError = "";
     private String activeDownloadModelId;
     private int activeDownloadProgress;
     private String activeDownloadSpeedText = "";
@@ -106,6 +122,13 @@ public class AutoSubTaskService extends Service {
         subtitleGenerator = new SubtitleGenerator(this);
         queueStore = new QueueStore(this);
         exportStore = new ExportStore(this);
+        gemmaModelManager = new GemmaModelManager(this);
+        shortsProjectStore = new ShortsProjectStore(this);
+        if (!gemmaModelManager.isInstalled() && gemmaModelManager.getPartialFile().length() > 0) {
+            gemmaDownloadPaused = true;
+            gemmaDownloadProgress = (int) Math.min(99,
+                    gemmaModelManager.getPartialFile().length() * 100 / GemmaModelManager.EXPECTED_SIZE);
+        }
         settingsPrefs = getSharedPreferences(PREFS_SETTINGS, MODE_PRIVATE);
         try {
             modelManager.loadCatalog();
@@ -128,11 +151,11 @@ public class AutoSubTaskService extends Service {
             cancelCurrentQueueItem();
             cancelMediaWork();
         } else if (ACTION_PAUSE_DOWNLOAD.equals(action)) {
-            pauseActiveDownload();
+            if (activeGemmaDownloadTask != null) pauseGemmaDownload(); else pauseActiveDownload();
         } else if (ACTION_RESUME_DOWNLOAD.equals(action)) {
-            resumeActiveDownload();
+            if (gemmaDownloadPaused) startGemmaDownload(); else resumeActiveDownload();
         } else if (ACTION_CANCEL_DOWNLOAD.equals(action)) {
-            cancelActiveDownload();
+            if (activeGemmaDownloadTask != null || gemmaDownloadPaused) cancelGemmaDownload(); else cancelActiveDownload();
         }
         return START_STICKY;
     }
@@ -154,8 +177,11 @@ public class AutoSubTaskService extends Service {
         if (activeDownloadTask != null) {
             activeDownloadTask.cancel();
         }
+        if (activeGemmaDownloadTask != null) activeGemmaDownloadTask.cancel();
+        if (activeShortsEngine != null) activeShortsEngine.close();
         releaseMediaWakeLock();
         subtitleGenerator.release();
+        shortsProjectStore.close();
         super.onDestroy();
     }
 
@@ -167,6 +193,8 @@ public class AutoSubTaskService extends Service {
         listener.onTaskStateChanged(currentState);
         listener.onQueueItemsChanged(queueStore.getItems());
         listener.onModelStateChanged(modelReady, selectedModelInfo, modelStatusText, generalStatusText);
+        listener.onGemmaStateChanged(gemmaModelManager.isInstalled(), activeGemmaDownloadTask != null,
+                gemmaDownloadProgress, gemmaDownloadSpeed, gemmaDownloadEta, gemmaDownloadPaused, gemmaError);
     }
 
     public void removeListener(Listener listener) {
@@ -400,6 +428,231 @@ public class AutoSubTaskService extends Service {
         publishCatalogRefresh();
     }
 
+    public GemmaModelManager getGemmaModelManager() { return gemmaModelManager; }
+
+    public void startGemmaDownload() {
+        if (gemmaModelManager.isInstalled() || activeGemmaDownloadTask != null) {
+            publishGemmaState();
+            return;
+        }
+        gemmaError = "";
+        gemmaDownloadPaused = false;
+        beginForeground(AutoSubTaskState.TaskType.GEMMA_MODEL_DOWNLOAD,
+                "Downloading Gemma 4 E2B", "Preparing model download...", 0);
+        activeGemmaDownloadTask = gemmaModelManager.startDownload(new GemmaModelManager.DownloadCallback() {
+            @Override public void onProgress(int progress, long received, long total, String speed, String eta) {
+                handler.post(() -> {
+                    gemmaDownloadProgress = progress;
+                    gemmaDownloadSpeed = speed;
+                    gemmaDownloadEta = eta;
+                    publishGemmaState();
+                    publishState(new AutoSubTaskState(AutoSubTaskState.TaskType.GEMMA_MODEL_DOWNLOAD,
+                            "Downloading Gemma 4 E2B", speed + (eta.isEmpty() ? "" : " - " + eta), progress,
+                            -1, null, speed, eta, gemmaDownloadPaused,
+                            queueRunning, queuedDownloadIds()));
+                });
+            }
+
+            @Override public void onComplete(File file) { handler.post(() -> finishGemmaDownload("")); }
+            @Override public void onPaused() { handler.post(() -> {
+                activeGemmaDownloadTask = null;
+                gemmaDownloadPaused = true;
+                publishGemmaState();
+                publishIdleStateIfNoWork();
+            }); }
+            @Override public void onCancelled() { handler.post(() -> finishGemmaDownload("")); }
+            @Override public void onError(String message) { handler.post(() -> finishGemmaDownload(message)); }
+        });
+        publishGemmaState();
+    }
+
+    public void pauseGemmaDownload() {
+        if (activeGemmaDownloadTask != null) activeGemmaDownloadTask.pause();
+    }
+
+    public void cancelGemmaDownload() {
+        if (activeGemmaDownloadTask != null) activeGemmaDownloadTask.cancel();
+        else {
+            gemmaModelManager.deleteModel();
+            gemmaDownloadPaused = false;
+            publishGemmaState();
+        }
+    }
+
+    public void deleteGemmaModel() {
+        if (activeGemmaDownloadTask != null) {
+            activeGemmaDownloadTask.cancel();
+            return;
+        }
+        gemmaModelManager.deleteModel();
+        gemmaDownloadPaused = false;
+        gemmaDownloadProgress = 0;
+        publishGemmaState();
+    }
+
+    private void finishGemmaDownload(String error) {
+        activeGemmaDownloadTask = null;
+        gemmaDownloadPaused = false;
+        gemmaError = error == null ? "" : error;
+        if (gemmaModelManager.isInstalled()) gemmaDownloadProgress = 100;
+        publishGemmaState();
+        publishIdleStateIfNoWork();
+    }
+
+    private void publishGemmaState() {
+        for (Listener listener : new ArrayList<>(listeners)) {
+            listener.onGemmaStateChanged(gemmaModelManager.isInstalled(), activeGemmaDownloadTask != null,
+                    gemmaDownloadProgress, gemmaDownloadSpeed, gemmaDownloadEta, gemmaDownloadPaused, gemmaError);
+        }
+    }
+
+    public ShortsProject getShortsProject(long queueItemId) { return shortsProjectStore.loadForQueueItem(queueItemId); }
+
+    public void saveShortsProject(ShortsProject project) {
+        shortsProjectStore.save(project);
+        publishShortsProject(project, "");
+    }
+
+    public void analyzeShorts(QueueItem item, int desiredCount, int minSeconds, int maxSeconds,
+                              String focusPrompt, boolean preferGpu) {
+        if (shortsAnalyzing) { publishShortsProject(null, "Shorts analysis is already running"); return; }
+        if (!ShortsLlmEngineFactory.isSupported()) { publishShortsProject(null, "AI Shorts requires Android 12 or newer"); return; }
+        if (!gemmaModelManager.isInstalled()) { publishShortsProject(null, "Download Gemma 4 E2B from Models first"); return; }
+        if (item == null || item.getSubtitles() == null || item.getSubtitles().isEmpty()) {
+            publishShortsProject(null, "Generate subtitles for this video first"); return;
+        }
+        if (queueRunning || batchRunning) { publishShortsProject(null, "Wait for the current media task to finish"); return; }
+
+        shortsAnalyzing = true;
+        Log.i(SHORTS_TAG, "Service analysis requested: queueItemId=" + item.getId() +
+                ", subtitleEntries=" + item.getSubtitles().size() + ", requestedClips=" + desiredCount +
+                ", durationRange=" + minSeconds + "-" + maxSeconds + "s, focusProvided=" +
+                (focusPrompt != null && !focusPrompt.trim().isEmpty()) +
+                ", backendPreference=" + (preferGpu ? "GPU" : "CPU"));
+        modelReady = false;
+        modelLoading = false;
+        generalStatusText = "Gemma is analyzing the transcript...";
+        modelStatusText = "Speech model temporarily unloaded to free memory";
+        subtitleGenerator.unloadModel();
+        publishModelState();
+        beginForeground(AutoSubTaskState.TaskType.GEMMA_MODEL_LOAD,
+                "Loading Gemma 4 E2B", "Preparing the local Shorts editor...", -1);
+        ShortsAnalysisRequest request = new ShortsAnalysisRequest(item.getId(), item.getSubtitles(),
+                desiredCount, minSeconds, maxSeconds, focusPrompt);
+        new Thread(() -> {
+            ShortsProject project = null;
+            String error = "";
+            try {
+                activeShortsEngine = ShortsLlmEngineFactory.create(this, preferGpu);
+                activeShortsEngine.initialize(gemmaModelManager.getModelFile());
+                handler.post(() -> beginForeground(AutoSubTaskState.TaskType.SHORTS_ANALYSIS,
+                        "Finding Shorts", "Analyzing the complete transcript...", 0));
+                ShortsTranscriptAnalyzer analyzer = new ShortsTranscriptAnalyzer(activeShortsEngine);
+                List<ShortsCandidate> candidates = analyzer.analyze(request, (progress, message) ->
+                        handler.post(() -> publishState(new AutoSubTaskState(AutoSubTaskState.TaskType.SHORTS_ANALYSIS,
+                                "Finding Shorts", message, progress, item.getId(), null, "", "", false,
+                                false, queuedDownloadIds()))));
+                project = new ShortsProject(item.getId(), request.getFocusPrompt(), request.getDesiredCount(),
+                        request.getMinDurationSeconds(), request.getMaxDurationSeconds());
+                project.setCandidates(candidates);
+                shortsProjectStore.save(project);
+                if (candidates.isEmpty()) error = "Gemma did not return any valid clips";
+            } catch (Throwable e) {
+                Log.e(SHORTS_TAG, "Service analysis failed: " + e.getMessage(), e);
+                error = e.getMessage() == null ? "Shorts analysis failed" : e.getMessage();
+            } finally {
+                if (activeShortsEngine != null) activeShortsEngine.close();
+                activeShortsEngine = null;
+            }
+            ShortsProject finalProject = project;
+            String finalError = error;
+            handler.post(() -> {
+                Log.i(SHORTS_TAG, "Service analysis finished: candidates=" +
+                        (finalProject == null ? 0 : finalProject.getCandidates().size()) +
+                        ", error=" + (finalError.isEmpty() ? "none" : finalError));
+                shortsAnalyzing = false;
+                publishShortsProject(finalProject, finalError);
+                currentState = AutoSubTaskState.idle(false, queuedDownloadIds());
+                initializeSelectedModel(true);
+            });
+        }, "shorts-analysis").start();
+    }
+
+    public void cancelShortsAnalysis() { if (activeShortsEngine != null) activeShortsEngine.cancel(); }
+
+    private void publishShortsProject(ShortsProject project, String error) {
+        for (Listener listener : new ArrayList<>(listeners)) {
+            listener.onShortsProjectChanged(project, error == null ? "" : error);
+        }
+    }
+
+    public void exportShorts(QueueItem item, ShortsProject project, File outputDir) {
+        if (item == null || project == null || batchRunning || queueRunning) {
+            publishShortsProject(project, "Wait for the current media task to finish");
+            return;
+        }
+        List<ShortsCandidate> selected = new ArrayList<>();
+        for (ShortsCandidate candidate : project.getCandidates()) if (candidate.isSelected()) selected.add(candidate);
+        if (selected.isEmpty()) { publishShortsProject(project, "Select at least one clip"); return; }
+        batchRunning = true;
+        shortsExportCancelRequested = false;
+        beginForeground(AutoSubTaskState.TaskType.SHORTS_EXPORT, "Exporting Shorts", "Preparing clips...", 0);
+        exportNextShort(item, project, selected, 0, outputDir);
+    }
+
+    private void exportNextShort(QueueItem item, ShortsProject project, List<ShortsCandidate> selected,
+                                 int index, File outputDir) {
+        if (shortsExportCancelRequested) {
+            batchRunning = false;
+            shortsExportCancelRequested = false;
+            shortsProjectStore.save(project);
+            publishShortsProject(project, "Export cancelled");
+            publishIdleStateIfNoWork();
+            return;
+        }
+        if (index >= selected.size()) {
+            batchRunning = false;
+            shortsProjectStore.save(project);
+            publishShortsProject(project, "");
+            showSuccessNotificationIfEnabled(2040, "Shorts exported", selected.size() + " clips are ready in Exports");
+            publishIdleStateIfNoWork();
+            return;
+        }
+        ShortsCandidate candidate = selected.get(index);
+        candidate.setRenderState(ShortsCandidate.RenderState.RENDERING);
+        candidate.setErrorMessage("");
+        shortsProjectStore.save(project);
+        publishShortsProject(project, "");
+        int baseProgress = index * 100 / selected.size();
+        publishState(new AutoSubTaskState(AutoSubTaskState.TaskType.SHORTS_EXPORT,
+                "Exporting Shorts", "Rendering " + (index + 1) + " of " + selected.size(), baseProgress,
+                item.getId(), null, "", "", false, false, queuedDownloadIds()));
+        SubtitleGenerator.ShortsSubtitleStyle style = new SubtitleGenerator.ShortsSubtitleStyle(0.5f, 0.72f,
+                settingsPrefs.getFloat("shorts_caption_size", 30f),
+                settingsPrefs.getBoolean("shorts_uppercase", true), true, true);
+        subtitleGenerator.exportShortClip(item.getVideoUri(), item.getSubtitles(), candidate, outputDir, style,
+                new SubtitleGenerator.VideoExportCallback() {
+                    @Override public void onVideoExported(String filePath) {
+                        candidate.setRenderState(ShortsCandidate.RenderState.EXPORTED);
+                        candidate.setOutputPath(filePath);
+                        File root = outputDir == null ? new File(ApplicationPath.applicationPath(AutoSubTaskService.this)) : outputDir;
+                        exportStore.addFile(new File(filePath), root, ExportRecord.TYPE_VIDEO, selectedModelInfo,
+                                item.getVideoUri().toString(), item.getDisplayName(), "short-clip", "mp4");
+                        shortsProjectStore.save(project);
+                        handler.post(() -> exportNextShort(item, project, selected, index + 1, outputDir));
+                    }
+
+                    @Override public void onError(String errorMessage) {
+                        candidate.setRenderState(ShortsCandidate.RenderState.FAILED);
+                        candidate.setErrorMessage(errorMessage);
+                        shortsProjectStore.save(project);
+                        handler.post(() -> exportNextShort(item, project, selected, index + 1, outputDir));
+                    }
+
+                    @Override public void onProgressUpdate(int progress) { }
+                });
+    }
+
     public void startQueue() {
         if (!modelReady || queueRunning) {
             return;
@@ -445,6 +698,8 @@ public class AutoSubTaskService extends Service {
 
     public void cancelMediaWork() {
         subtitleGenerator.cancelGeneration();
+        if (activeShortsEngine != null) activeShortsEngine.cancel();
+        if (currentState.getTaskType() == AutoSubTaskState.TaskType.SHORTS_EXPORT) shortsExportCancelRequested = true;
         FFmpegKit.cancel();
     }
 
@@ -1138,10 +1393,11 @@ public class AutoSubTaskService extends Service {
         if (!queueRunning && !batchRunning) {
             clearMediaNotificationLane();
         }
-        if (activeDownloadTask == null && activeDownloadModelId == null) {
+        if (activeDownloadTask == null && activeDownloadModelId == null && activeGemmaDownloadTask == null) {
             clearDownloadNotificationLane();
         }
-        if (queueRunning || batchRunning || activeDownloadTask != null || modelLoading) {
+        if (queueRunning || batchRunning || activeDownloadTask != null || activeGemmaDownloadTask != null
+                || modelLoading || shortsAnalyzing) {
             return;
         }
         publishState(AutoSubTaskState.idle(false, queuedDownloadIds()));
@@ -1158,7 +1414,8 @@ public class AutoSubTaskService extends Service {
         NotificationCompat.Builder builder = NotificationHelper.createForegroundTaskNotificationBuilder(
                 this, notificationIconFor(state.getTaskType()), state.getTitle(), state.getMessage(), state.getProgress(), contentIntent);
 
-        if (state.getTaskType() == AutoSubTaskState.TaskType.MODEL_DOWNLOAD) {
+        if (state.getTaskType() == AutoSubTaskState.TaskType.MODEL_DOWNLOAD
+                || state.getTaskType() == AutoSubTaskState.TaskType.GEMMA_MODEL_DOWNLOAD) {
             builder.addAction(state.isDownloadPaused() ? R.drawable.ri_play_line : R.drawable.ri_pause_line,
                     state.isDownloadPaused() ? "Resume" : "Pause",
                     serviceAction(state.isDownloadPaused() ? ACTION_RESUME_DOWNLOAD : ACTION_PAUSE_DOWNLOAD, 1));
@@ -1175,7 +1432,8 @@ public class AutoSubTaskService extends Service {
     }
 
     private void updateSecondaryNotifications(AutoSubTaskState foregroundState) {
-        boolean foregroundIsDownload = foregroundState.getTaskType() == AutoSubTaskState.TaskType.MODEL_DOWNLOAD;
+        boolean foregroundIsDownload = foregroundState.getTaskType() == AutoSubTaskState.TaskType.MODEL_DOWNLOAD
+                || foregroundState.getTaskType() == AutoSubTaskState.TaskType.GEMMA_MODEL_DOWNLOAD;
         boolean foregroundIsMedia = isMediaTask(foregroundState.getTaskType());
 
         if (latestDownloadState != null && !foregroundIsDownload) {
@@ -1210,7 +1468,8 @@ public class AutoSubTaskService extends Service {
     }
 
     private void rememberNotificationLane(AutoSubTaskState state) {
-        if (state.getTaskType() == AutoSubTaskState.TaskType.MODEL_DOWNLOAD) {
+        if (state.getTaskType() == AutoSubTaskState.TaskType.MODEL_DOWNLOAD
+                || state.getTaskType() == AutoSubTaskState.TaskType.GEMMA_MODEL_DOWNLOAD) {
             latestDownloadState = state;
         } else if (isMediaTask(state.getTaskType())) {
             latestMediaState = state;
@@ -1229,7 +1488,8 @@ public class AutoSubTaskService extends Service {
         NotificationCompat.Builder builder = NotificationHelper.createForegroundTaskNotificationBuilder(
                 this, notificationIconFor(state.getTaskType()), state.getTitle(), state.getMessage(),
                 state.getProgress(), contentIntent);
-        if (state.getTaskType() == AutoSubTaskState.TaskType.MODEL_DOWNLOAD) {
+        if (state.getTaskType() == AutoSubTaskState.TaskType.MODEL_DOWNLOAD
+                || state.getTaskType() == AutoSubTaskState.TaskType.GEMMA_MODEL_DOWNLOAD) {
             builder.addAction(state.isDownloadPaused() ? R.drawable.ri_play_line : R.drawable.ri_pause_line,
                     state.isDownloadPaused() ? "Resume" : "Pause",
                     serviceAction(state.isDownloadPaused() ? ACTION_RESUME_DOWNLOAD : ACTION_PAUSE_DOWNLOAD, 11));
@@ -1255,7 +1515,7 @@ public class AutoSubTaskService extends Service {
     }
 
     private boolean isDownloadLaneActive() {
-        return activeDownloadTask != null || activeDownloadModelId != null;
+        return activeDownloadTask != null || activeDownloadModelId != null || activeGemmaDownloadTask != null;
     }
 
     private boolean isMediaLaneActive() {
@@ -1299,11 +1559,14 @@ public class AutoSubTaskService extends Service {
     }
 
     private int notificationIconFor(AutoSubTaskState.TaskType taskType) {
-        if (taskType == AutoSubTaskState.TaskType.MODEL_DOWNLOAD) {
+        if (taskType == AutoSubTaskState.TaskType.MODEL_DOWNLOAD
+                || taskType == AutoSubTaskState.TaskType.GEMMA_MODEL_DOWNLOAD
+                || taskType == AutoSubTaskState.TaskType.GEMMA_MODEL_LOAD) {
             return R.drawable.ri_download_line;
         }
         if (taskType == AutoSubTaskState.TaskType.VIDEO_EXPORT
-                || taskType == AutoSubTaskState.TaskType.BATCH_VIDEO_EXPORT) {
+                || taskType == AutoSubTaskState.TaskType.BATCH_VIDEO_EXPORT
+                || taskType == AutoSubTaskState.TaskType.SHORTS_EXPORT) {
             return R.drawable.ri_file_video_line;
         }
         if (taskType == AutoSubTaskState.TaskType.SUBTITLE_GENERATION
@@ -1316,7 +1579,8 @@ public class AutoSubTaskService extends Service {
 
     private int mediaNotificationIdFor(AutoSubTaskState.TaskType taskType) {
         if (taskType == AutoSubTaskState.TaskType.VIDEO_EXPORT
-                || taskType == AutoSubTaskState.TaskType.BATCH_VIDEO_EXPORT) {
+                || taskType == AutoSubTaskState.TaskType.BATCH_VIDEO_EXPORT
+                || taskType == AutoSubTaskState.TaskType.SHORTS_EXPORT) {
             return 3001;
         }
         return 2001;
@@ -1347,12 +1611,14 @@ public class AutoSubTaskService extends Service {
                 || taskType == AutoSubTaskState.TaskType.SUBTITLE_SAVE
                 || taskType == AutoSubTaskState.TaskType.VIDEO_EXPORT
                 || taskType == AutoSubTaskState.TaskType.BATCH_SUBTITLE_SAVE
-                || taskType == AutoSubTaskState.TaskType.BATCH_VIDEO_EXPORT;
+                || taskType == AutoSubTaskState.TaskType.BATCH_VIDEO_EXPORT
+                || taskType == AutoSubTaskState.TaskType.SHORTS_ANALYSIS
+                || taskType == AutoSubTaskState.TaskType.SHORTS_EXPORT;
     }
 
     private void stopForegroundAndMaybeSelf() {
         if (currentState.getTaskType() != AutoSubTaskState.TaskType.NONE || queueRunning || batchRunning
-                || activeDownloadTask != null || modelLoading) {
+                || activeDownloadTask != null || activeGemmaDownloadTask != null || modelLoading || shortsAnalyzing) {
             return;
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
