@@ -193,19 +193,58 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
         focus.setHint("Optional focus, e.g. prioritize tutorials");
         focus.setSingleLine(false);
         focus.setMinLines(2);
+        
         android.widget.CheckBox responsiveCpu = new android.widget.CheckBox(requireContext());
         responsiveCpu.setText("Use CPU to keep the interface responsive (slower)");
         responsiveCpu.setChecked(false);
+
+        android.widget.CheckBox wordByWord = new android.widget.CheckBox(requireContext());
+        wordByWord.setText("Use word-by-word captions");
+        android.content.SharedPreferences settingsPrefs = requireContext().getSharedPreferences("autosub_settings", android.content.Context.MODE_PRIVATE);
+        boolean isWordByWord = settingsPrefs.getBoolean("shorts_mode_word_by_word", false);
+        wordByWord.setChecked(isWordByWord);
+
+        android.widget.TextView sliderLabel = new android.widget.TextView(requireContext());
+        int savedWords = settingsPrefs.getInt("shorts_max_words_per_subtitle", 10);
+        sliderLabel.setText("Words per standard subtitle: " + savedWords);
+        sliderLabel.setPadding(0, Math.round(10 * getResources().getDisplayMetrics().density), 0, 0);
+
+        com.google.android.material.slider.Slider wordSlider = new com.google.android.material.slider.Slider(requireContext());
+        wordSlider.setValueFrom(3f);
+        wordSlider.setValueTo(25f);
+        wordSlider.setStepSize(1f);
+        wordSlider.setValue((float) savedWords);
+
+        wordSlider.addOnChangeListener((slider, value, fromUser) -> {
+            sliderLabel.setText("Words per standard subtitle: " + (int) value);
+        });
+
+        wordByWord.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            wordSlider.setEnabled(!isChecked);
+            sliderLabel.setEnabled(!isChecked);
+        });
+        wordSlider.setEnabled(!isWordByWord);
+        sliderLabel.setEnabled(!isWordByWord);
+
         layout.addView(count); layout.addView(min); layout.addView(max); layout.addView(focus);
         layout.addView(responsiveCpu);
+        layout.addView(wordByWord);
+        layout.addView(sliderLabel);
+        layout.addView(wordSlider);
 
         new MaterialAlertDialogBuilder(requireContext())
                 .setTitle("Find the best Shorts")
                 .setMessage("Gemma will analyze the saved transcript locally. Transcript text is treated as data and never uploaded.")
                 .setView(layout)
-                .setPositiveButton("Analyze", (dialog, which) -> viewModel.analyzeShorts(item,
-                        parseInt(count, 5), parseInt(min, 20), parseInt(max, 60), focus.getText().toString(),
-                        !responsiveCpu.isChecked()))
+                .setPositiveButton("Analyze", (dialog, which) -> {
+                    settingsPrefs.edit()
+                            .putBoolean("shorts_mode_word_by_word", wordByWord.isChecked())
+                            .putInt("shorts_max_words_per_subtitle", (int) wordSlider.getValue())
+                            .apply();
+                    viewModel.analyzeShorts(item,
+                            parseInt(count, 5), parseInt(min, 20), parseInt(max, 60), focus.getText().toString(),
+                            !responsiveCpu.isChecked());
+                })
                 .setNegativeButton("Cancel", null)
                 .show();
     }

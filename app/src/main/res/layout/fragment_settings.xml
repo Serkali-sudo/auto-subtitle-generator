@@ -317,6 +317,13 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Do not ask about Shorts mode" />
+
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/shortsSmoothAutoFramingSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Use smooth panning in auto framer" />
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 

@@ -27,6 +27,24 @@ import java.util.concurrent.TimeUnit;
 public final class ShortsAutoFramer {
     private static final long SAMPLE_INTERVAL_MS = 200;
     private static final long MIN_KEYFRAME_GAP_MS = 200;
+    // Temporal smoothing so the crop eases toward the active speaker instead of snapping on
+    // every sample. Sub-deadzone wobble is ignored so the camera holds steady; a large delta
+    // (typically a speaker switch) still hard-cuts straight to the new framing.
+    private static final float MOTION_DEADZONE = 0.03f;
+    private static final float SNAP_THRESHOLD = 0.16f;
+    private static final float SMOOTHING_FACTOR = 0.35f;
+    // The clip opens on the framing it settles on within this window, so there is no visible
+    // pan from the initial lock to the active speaker — it just starts on the right face.
+    private static final long OPENING_SETTLE_MS = 200;
+    // Active-speaker hysteresis: stay locked on the committed face and only switch to another
+    // once it has clearly out-scored the current one for several consecutive samples. This stops
+    // the frame ping-ponging between people when more than one face is visible.
+    private static final int SWITCH_DWELL = 2;
+    private static final float SWITCH_MARGIN = 1.15f;
+    // A clearly dominant face (committed one is silent / much weaker) takes over on the very next
+    // sample, skipping the dwell — that's the case where the wait felt like lag.
+    private static final float STRONG_SWITCH_MARGIN = 2.2f;
+    private static final long LOST_GRACE_MS = 300;
 
     public interface ProgressListener { void onProgress(int percent, String message); }
     public interface CancellationSignal { boolean isCancelled(); }
@@ -44,7 +62,7 @@ public final class ShortsAutoFramer {
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-                .setMinFaceSize(0.08f)
+                .setMinFaceSize(0.10f)
                 .enableTracking()
                 .build();
         FaceDetector detector = FaceDetection.getClient(options);
@@ -66,6 +84,9 @@ public final class ShortsAutoFramer {
         int nextSyntheticId = -1;
         float cropPosition = candidate.getCropPosition();
         boolean framingInitialized = false;
+        int committedId = Integer.MIN_VALUE;
+        int challengerId = Integer.MIN_VALUE;
+        int challengerStreak = 0;
         int framesWithFaces = 0;
 
         try {
@@ -97,25 +118,70 @@ public final class ShortsAutoFramer {
                         updateTrack(state, face, frame.getWidth(), frame.getHeight(), localMs);
                         if (best == null || state.score > best.score) best = state;
                     }
-                    boolean justInitialized = false;
-                    if (!framingInitialized && best != null) {
-                        // Never begin centered while a face is already known. Lock the first
-                        // visible face at t=0; speaking activity can hard-cut to another face later.
-                        cropPosition = cropPositionForFace(best.centerX,
-                                    frame.getWidth(), frame.getHeight());
-                        framingInitialized = true;
-                        justInitialized = true;
-                        selectedTrack = best;
-                        keyframes.add(faceKeyframe(0, cropPosition, best));
+                    // Pick the face to frame with hysteresis. Keep the committed speaker locked
+                    // unless a different face has clearly led for SWITCH_DWELL samples in a row, or
+                    // the committed face has been gone past the grace window.
+                    TrackState committed = tracks.get(committedId);
+                    boolean committedAlive = committed != null
+                            && localMs - committed.lastSeenMs <= LOST_GRACE_MS;
+                    TrackState target;
+                    if (!committedAlive) {
+                        target = best;
+                        challengerId = Integer.MIN_VALUE;
+                        challengerStreak = 0;
+                    } else if (best == null || best == committed) {
+                        target = committed;
+                        challengerId = Integer.MIN_VALUE;
+                        challengerStreak = 0;
+                    } else {
+                        if (best.id == challengerId) challengerStreak++;
+                        else { challengerId = best.id; challengerStreak = 1; }
+                        boolean clearLead = best.score > committed.score * SWITCH_MARGIN;
+                        boolean dominantLead = best.score > committed.score * STRONG_SWITCH_MARGIN;
+                        if (dominantLead || (challengerStreak >= SWITCH_DWELL && clearLead)) {
+                            target = best;
+                            challengerId = Integer.MIN_VALUE;
+                            challengerStreak = 0;
+                        } else {
+                            target = committed;
+                        }
                     }
-                    if (framingInitialized && !justInitialized && best != null) {
-                        // A single visible face always wins immediately. With multiple faces,
-                        // mouth activity decides the target without an extra temporal hold.
-                        cropPosition = cropPositionForFace(best.centerX,
+
+                    boolean isHardCut = false;
+                    if (target != null) {
+                        float desired = cropPositionForFace(target.centerX,
                                 frame.getWidth(), frame.getHeight());
-                        selectedTrack = best;
+                        if (!framingInitialized) {
+                            // Lock the first speaker at t=0 instead of starting centered.
+                            cropPosition = desired;
+                            framingInitialized = true;
+                            keyframes.add(faceKeyframe(0, cropPosition, target));
+                        } else if (target.id != committedId) {
+                            // A real, sustained speaker change — cut straight to the new face.
+                            if (cropPosition != desired) {
+                                isHardCut = true;
+                            }
+                            cropPosition = desired;
+                        } else {
+                            // Same speaker — ease toward them and ignore sub-deadzone wobble.
+                            float nextPos = smoothCropPosition(cropPosition, desired);
+                            if (nextPos == desired && Math.abs(desired - cropPosition) >= SNAP_THRESHOLD) {
+                                isHardCut = true;
+                            }
+                            cropPosition = nextPos;
+                        }
+                        committedId = target.id;
+                        selectedTrack = target;
                     }
-                    if (framingInitialized) addSparseKeyframe(keyframes, localMs, cropPosition, selectedTrack);
+                    if (framingInitialized) {
+                        if (isHardCut && !keyframes.isEmpty()) {
+                            ShortsCropKeyframe last = keyframes.get(keyframes.size() - 1);
+                            if (localMs - 1 > last.getTimeMs()) {
+                                keyframes.add(copyAt(last, localMs - 1));
+                            }
+                        }
+                        addSparseKeyframe(keyframes, localMs, cropPosition, selectedTrack);
+                    }
                     tracks.entrySet().removeIf(entry -> localMs - entry.getValue().lastSeenMs > 2_000);
                 } finally {
                     frame.recycle();
@@ -131,6 +197,7 @@ public final class ShortsAutoFramer {
         }
         if (framesWithFaces == 0) throw new IllegalStateException("No faces were found in this clip");
         if (keyframes.isEmpty()) keyframes.add(new ShortsCropKeyframe(0, candidate.getCropPosition()));
+        anchorOpeningFraming(keyframes);
         ShortsCropKeyframe last = keyframes.get(keyframes.size() - 1);
         if (last.getTimeMs() < duration) keyframes.add(copyAt(last, duration));
         return keyframes;
@@ -207,6 +274,14 @@ public final class ShortsAutoFramer {
         return clamp(left / (width - cropWidth));
     }
 
+    static float smoothCropPosition(float current, float target) {
+        float delta = target - current;
+        float magnitude = Math.abs(delta);
+        if (magnitude <= MOTION_DEADZONE) return current;   // hold steady through small head wobble
+        if (magnitude >= SNAP_THRESHOLD) return target;     // speaker switch / large move: hard cut
+        return clamp(current + delta * SMOOTHING_FACTOR);   // ease toward the target
+    }
+
     static void addSparseKeyframe(List<ShortsCropKeyframe> frames, long timeMs, float position) {
         addSparseKeyframe(frames, timeMs, position, null);
     }
@@ -225,6 +300,24 @@ public final class ShortsAutoFramer {
     private static ShortsCropKeyframe faceKeyframe(long timeMs, float position, TrackState face) {
         return new ShortsCropKeyframe(timeMs, position, face.normalizedCenterX,
                 face.normalizedCenterY, face.normalizedWidth, face.normalizedHeight);
+    }
+
+    /**
+     * Collapses the initial lock-on pan: open the clip on whatever framing it settles on shortly
+     * after the start, instead of beginning on the first (possibly wrong or centered) detection and
+     * visibly sliding to the active speaker.
+     */
+    static void anchorOpeningFraming(List<ShortsCropKeyframe> keyframes) {
+        if (keyframes.size() < 2) return;
+        int settleIndex = 0;
+        for (int i = 1; i < keyframes.size(); i++) {
+            if (keyframes.get(i).getTimeMs() > OPENING_SETTLE_MS) break;
+            settleIndex = i;
+        }
+        if (settleIndex == 0) return;
+        ShortsCropKeyframe settle = keyframes.get(settleIndex);
+        for (int i = settleIndex; i >= 1; i--) keyframes.remove(i);
+        keyframes.set(0, copyAt(settle, 0));
     }
 
     private static ShortsCropKeyframe copyAt(ShortsCropKeyframe source, long timeMs) {

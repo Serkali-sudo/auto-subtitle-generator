@@ -70,8 +70,31 @@ public class ShortsCandidate {
     public void clearCropKeyframes() { cropKeyframes.clear(); }
     public boolean hasAutoFraming() { return !cropKeyframes.isEmpty(); }
     public float getCropPositionAt(long clipLocalMs) {
-        ShortsCropKeyframe active = getCropKeyframeAt(clipLocalMs);
-        return active == null ? cropPosition : active.getPosition();
+        return getCropPositionAt(clipLocalMs, false);
+    }
+
+    public float getCropPositionAt(long clipLocalMs, boolean smooth) {
+        if (cropKeyframes.isEmpty()) return cropPosition;
+        long time = Math.max(0, clipLocalMs);
+        ShortsCropKeyframe active = cropKeyframes.get(0);
+        if (time <= active.getTimeMs()) return active.getPosition();
+
+        for (int i = 0; i < cropKeyframes.size() - 1; i++) {
+            ShortsCropKeyframe left = cropKeyframes.get(i);
+            ShortsCropKeyframe right = cropKeyframes.get(i + 1);
+            if (time >= left.getTimeMs() && time < right.getTimeMs()) {
+                if (!smooth) {
+                    return left.getPosition();
+                }
+                long duration = right.getTimeMs() - left.getTimeMs();
+                if (duration <= 2) {
+                    return left.getPosition();
+                }
+                float t = (float) (time - left.getTimeMs()) / duration;
+                return left.getPosition() + t * (right.getPosition() - left.getPosition());
+            }
+        }
+        return cropKeyframes.get(cropKeyframes.size() - 1).getPosition();
     }
     public ShortsCropKeyframe getCropKeyframeAt(long clipLocalMs) {
         if (cropKeyframes.isEmpty()) return null;

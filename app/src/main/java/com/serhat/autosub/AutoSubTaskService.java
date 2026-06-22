@@ -543,8 +543,10 @@ public class AutoSubTaskService extends Service {
             ShortsProject project = null;
             String error = "";
             try {
+                int estimatedTokens = ShortsTranscriptAnalyzer.estimateTranscriptTokens(request.getSubtitles());
+                int maxContextTokens = Math.max(8192, Math.min(32768, estimatedTokens + 4000));
                 activeShortsEngine = ShortsLlmEngineFactory.create(this, preferGpu);
-                activeShortsEngine.initialize(gemmaModelManager.getModelFile());
+                activeShortsEngine.initialize(gemmaModelManager.getModelFile(), maxContextTokens);
                 handler.post(() -> beginForeground(AutoSubTaskState.TaskType.SHORTS_ANALYSIS,
                         "Finding Shorts", "Analyzing the complete transcript...", 0));
                 ShortsTranscriptAnalyzer analyzer = new ShortsTranscriptAnalyzer(activeShortsEngine);
@@ -629,7 +631,8 @@ public class AutoSubTaskService extends Service {
                 item.getId(), null, "", "", false, false, queuedDownloadIds()));
         SubtitleGenerator.ShortsSubtitleStyle style = new SubtitleGenerator.ShortsSubtitleStyle(0.5f, 0.72f,
                 settingsPrefs.getFloat("shorts_caption_size", 30f),
-                settingsPrefs.getBoolean("shorts_uppercase", true), true, true);
+                settingsPrefs.getBoolean("shorts_uppercase", true),
+                settingsPrefs.getBoolean("shorts_mode_word_by_word", false), true);
         subtitleGenerator.exportShortClip(item.getVideoUri(), item.getSubtitles(), candidate, outputDir, style,
                 new SubtitleGenerator.VideoExportCallback() {
                     @Override public void onVideoExported(String filePath) {
@@ -970,6 +973,8 @@ public class AutoSubTaskService extends Service {
         subtitleGenerator.setWordByWordMode(useWordByWord);
         subtitleGenerator.setMaxSubtitleLength(settingsPrefs.getInt(
                 KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH));
+        subtitleGenerator.setMaxWordsPerSubtitle(settingsPrefs.getInt(
+                "shorts_max_words_per_subtitle", SubtitleGenerator.DEFAULT_MAX_WORDS_PER_SUBTITLE));
         subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));

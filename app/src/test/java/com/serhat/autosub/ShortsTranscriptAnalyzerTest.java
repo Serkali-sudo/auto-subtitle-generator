@@ -127,6 +127,24 @@ public class ShortsTranscriptAnalyzerTest {
         assertTrue(calls.get() > 1);
     }
 
+    @Test public void repairsCommonJsonErrors() {
+        String broken = "{\n" +
+                "  \"clips\": [\n" +
+                "    {\n" +
+                "      \"ids\": [S17, S28],\n" +
+                "      \"title\": \"Future vs. Present conflict\"      \"hook\": \"Future self clashes.\",\n" +
+                "      ,\n" +
+                "      \"score\": 950\n" +
+                "    }\n" +
+                "  ]\n" +
+                "}";
+        String repaired = ShortsTranscriptAnalyzer.repairCommonJson(broken);
+        assertTrue(repaired.contains("\"ids\": [\"S17\", \"S28\"]") || repaired.contains("\"ids\":[\"S17\",\"S28\"]"));
+        assertTrue(repaired.contains("\"title\": \"Future vs. Present conflict\", \"hook\":") || repaired.contains("\"title\":\"Future vs. Present conflict\",\"hook\":"));
+        assertTrue(repaired.contains("\"score\": 950") || repaired.contains("\"score\":950"));
+        assertFalse(repaired.contains(",\\s*,"));
+    }
+
     private static List<SubtitleGenerator.SubtitleEntry> transcript(int count, String text) {
         List<SubtitleGenerator.SubtitleEntry> result = new ArrayList<>();
         for (int i = 0; i < count; i++) {
@@ -142,13 +160,17 @@ public class ShortsTranscriptAnalyzerTest {
     private static class CapturingEngine implements ShortsLlmEngine {
         String system = "";
         String prompt = "";
-        @Override public void initialize(File modelFile) { }
+        private int maxContextTokens = 8192;
+        @Override public void initialize(File modelFile, int maxContextTokens) {
+            this.maxContextTokens = maxContextTokens;
+        }
         @Override public String generate(String systemInstruction, String prompt) {
             this.system = systemInstruction;
             this.prompt = prompt;
             return "{\"clips\":[{\"ids\":[1,25],\"title\":\"Useful idea\",\"hook\":\"Watch this\",\"reason\":\"Self contained\",\"score\":90}]}";
         }
         @Override public void cancel() { }
+        @Override public int getMaxContextTokens() { return maxContextTokens; }
         @Override public void close() { }
     }
 }

@@ -18,8 +18,7 @@ import java.util.Map;
 public final class ShortsTranscriptAnalyzer {
     private static final String TAG = "AutoSubShorts";
     // The UTF-8 estimate is deliberately conservative but not identical to Gemma tokenization.
-    // This cap keeps actual input plus template and JSON output inside the 8K mobile context.
-    static final int MAX_ESTIMATED_INPUT_TOKENS = 4_400;
+    // This cap keeps actual input plus template and JSON output inside the mobile context.
     private static final long CHUNK_OVERLAP_MS = 30_000;
     private static final String SYSTEM_PROMPT =
             "You are AutoSub's expert short-form video editor. Select transcript spans that make compelling, self-contained vertical clips. " +
@@ -33,8 +32,12 @@ public final class ShortsTranscriptAnalyzer {
     public interface ProgressListener { void onProgress(int percent, String message); }
 
     private final ShortsLlmEngine engine;
+    private final int maxEstimatedInputTokens;
 
-    public ShortsTranscriptAnalyzer(ShortsLlmEngine engine) { this.engine = engine; }
+    public ShortsTranscriptAnalyzer(ShortsLlmEngine engine) {
+        this.engine = engine;
+        this.maxEstimatedInputTokens = Math.max(4400, engine.getMaxContextTokens() - 4000);
+    }
 
     public List<ShortsCandidate> analyze(ShortsAnalysisRequest request, ProgressListener listener) throws Exception {
         List<Entry> entries = toEntries(request.getSubtitles());
@@ -287,9 +290,18 @@ public final class ShortsTranscriptAnalyzer {
 
     static String repairCommonJson(String response) {
         if (response == null) return "";
-        return response
+        String repaired = response
                 .replaceAll(",\\s*\"\\s*,\\s*\"([A-Za-z_][A-Za-z0-9_]*)\"\\s*:", ",\"$1\":")
                 .replaceAll(",\\s*([}\\]])", "$1");
+        // Replace consecutive/double commas (separated by optional whitespace) with a single comma
+        repaired = repaired.replaceAll(",(\\s*,)+", ",");
+        // Quote unquoted S-labels (e.g. S12 -> "S12")
+        repaired = repaired.replaceAll("(?<!\")\\b([Ss]\\d+)\\b(?!\")", "\"$1\"");
+        // Add missing commas between adjacent string tokens (e.g. "value" "key": -> "value", "key": or ["S1" "S2"] -> ["S1", "S2"])
+        repaired = repaired.replaceAll("(\"[^\"]*\")\\s*(\"[^\"]*\")", "$1, $2");
+        // Add missing commas after numbers/booleans followed by a key (e.g. 90 "title": -> 90, "title":)
+        repaired = repaired.replaceAll("(\\b[0-9]+|true|false)\\s*(\"[A-Za-z0-9_]+\")\\s*:", "$1, $2:");
+        return repaired;
     }
 
     static String extractJsonArray(String response) {
@@ -303,6 +315,12 @@ public final class ShortsTranscriptAnalyzer {
     static int estimateTokens(String text) {
         if (text == null || text.isEmpty()) return 0;
         return Math.max(1, (text.getBytes(StandardCharsets.UTF_8).length + 2) / 3);
+    }
+
+    public static int estimateTranscriptTokens(List<SubtitleGenerator.SubtitleEntry> subtitles) {
+        if (subtitles == null || subtitles.isEmpty()) return 0;
+        List<Entry> entries = toEntries(subtitles);
+        return estimateTokens(serialize(entries));
     }
 
     static long parseTimeMs(String time) {
@@ -351,7 +369,7 @@ public final class ShortsTranscriptAnalyzer {
         return result;
     }
 
-    private static List<List<Entry>> splitIntoChunks(List<Entry> entries) {
+    private List<List<Entry>> splitIntoChunks(List<Entry> entries) {
         List<List<Entry>> chunks = new ArrayList<>();
         int start = 0;
         while (start < entries.size()) {
@@ -359,7 +377,7 @@ public final class ShortsTranscriptAnalyzer {
             StringBuilder content = new StringBuilder();
             while (end < entries.size()) {
                 String line = entries.get(end).line();
-                if (end > start && estimateTokens(content + line) > MAX_ESTIMATED_INPUT_TOKENS) break;
+                if (end > start && estimateTokens(content + line) > maxEstimatedInputTokens) break;
                 content.append(line);
                 end++;
             }

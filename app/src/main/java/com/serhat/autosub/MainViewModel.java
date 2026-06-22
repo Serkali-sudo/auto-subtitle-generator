@@ -68,6 +68,7 @@ public class MainViewModel extends AndroidViewModel {
     private static final String KEY_TRANSLATION_TARGET_LANGUAGE = "translation_target_language";
     private static final String KEY_SHOW_COMPLETION_NOTIFICATIONS = "show_completion_notifications";
     private static final String KEY_SHOW_RAM_USAGE = "show_ram_usage";
+    private static final String KEY_SHORTS_SMOOTH_AUTO_FRAMING = "shorts_smooth_auto_framing";
     private final android.content.SharedPreferences settingsPrefs;
 
     // --- State LiveData ---
@@ -125,6 +126,7 @@ public class MainViewModel extends AndroidViewModel {
     private final MutableLiveData<Boolean> skipShortsDialog = new MutableLiveData<>(false);
     private final MutableLiveData<Boolean> showCompletionNotifications = new MutableLiveData<>(true);
     private final MutableLiveData<Boolean> showRamUsage = new MutableLiveData<>(true);
+    private final MutableLiveData<Boolean> shortsSmoothAutoFraming = new MutableLiveData<>(false);
 
     // Navigation and screen command trigger
     private final MutableLiveData<Integer> activeNavigationTab = new MutableLiveData<>(R.id.nav_generate);
@@ -382,6 +384,7 @@ public class MainViewModel extends AndroidViewModel {
     public LiveData<Boolean> getSkipShortsDialog() { return skipShortsDialog; }
     public LiveData<Boolean> getShowCompletionNotifications() { return showCompletionNotifications; }
     public LiveData<Boolean> getShowRamUsage() { return showRamUsage; }
+    public LiveData<Boolean> getShortsSmoothAutoFraming() { return shortsSmoothAutoFraming; }
 
     public LiveData<Integer> getActiveNavigationTab() { return activeNavigationTab; }
     public LiveData<Boolean> getNavigateToPreviewTrigger() { return navigateToPreviewTrigger; }
@@ -435,6 +438,7 @@ public class MainViewModel extends AndroidViewModel {
         skipShortsDialog.setValue(settingsPrefs.getBoolean(KEY_SHORTS_DONT_SHOW_AGAIN, false));
         showCompletionNotifications.setValue(settingsPrefs.getBoolean(KEY_SHOW_COMPLETION_NOTIFICATIONS, true));
         showRamUsage.setValue(settingsPrefs.getBoolean(KEY_SHOW_RAM_USAGE, true));
+        shortsSmoothAutoFraming.setValue(settingsPrefs.getBoolean(KEY_SHORTS_SMOOTH_AUTO_FRAMING, false));
     }
 
     public void setActiveNavigationTab(int id) {
@@ -663,6 +667,11 @@ public class MainViewModel extends AndroidViewModel {
     public void setShowRamUsage(boolean enabled) {
         showRamUsage.setValue(enabled);
         settingsPrefs.edit().putBoolean(KEY_SHOW_RAM_USAGE, enabled).apply();
+    }
+
+    public void setShortsSmoothAutoFraming(boolean enabled) {
+        shortsSmoothAutoFraming.setValue(enabled);
+        settingsPrefs.edit().putBoolean(KEY_SHORTS_SMOOTH_AUTO_FRAMING, enabled).apply();
     }
 
     public void setShortsPreviewMode(boolean isShorts) {
@@ -1296,6 +1305,8 @@ public class MainViewModel extends AndroidViewModel {
         subtitleGenerator.setWordByWordMode(useWordByWord);
         subtitleGenerator.setMaxSubtitleLength(settingsPrefs.getInt(
                 KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH));
+        subtitleGenerator.setMaxWordsPerSubtitle(settingsPrefs.getInt(
+                "shorts_max_words_per_subtitle", SubtitleGenerator.DEFAULT_MAX_WORDS_PER_SUBTITLE));
         subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));

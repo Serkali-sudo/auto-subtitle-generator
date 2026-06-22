@@ -32,10 +32,13 @@ class LiteRtShortsLlmEngine(
     @Volatile private var conversation: Conversation? = null
     @Volatile private var backendLabel: String = "not-initialized"
 
-    override fun initialize(modelFile: File) {
+    private var maxContextTokens: Int = 8192
+
+    override fun initialize(modelFile: File, maxContextTokens: Int) {
+        this.maxContextTokens = maxContextTokens
         val startedAt = System.currentTimeMillis()
         Log.i(TAG, "Engine initialization started: fileBytes=${modelFile.length()}, " +
-            "preferredBackend=${if (preferGpu) "GPU" else "CPU"}, maxContextTokens=8192")
+            "preferredBackend=${if (preferGpu) "GPU" else "CPU"}, maxContextTokens=$maxContextTokens")
         close()
         if (!preferGpu) {
             val cpuConfig = EngineConfig(
@@ -43,7 +46,7 @@ class LiteRtShortsLlmEngine(
                 backend = Backend.CPU(),
                 visionBackend = null,
                 audioBackend = null,
-                maxNumTokens = 8_192,
+                maxNumTokens = maxContextTokens,
                 cacheDir = context.externalCacheDir?.absolutePath,
             )
             engine = Engine(cpuConfig).also { it.initialize() }
@@ -57,7 +60,7 @@ class LiteRtShortsLlmEngine(
             visionBackend = null,
             audioBackend = null,
             // Keep the mobile KV cache bounded. Longer transcripts are chunked by the analyzer.
-            maxNumTokens = 8_192,
+            maxNumTokens = maxContextTokens,
             cacheDir = context.externalCacheDir?.absolutePath,
         )
         try {
@@ -72,13 +75,17 @@ class LiteRtShortsLlmEngine(
                 backend = Backend.CPU(),
                 visionBackend = null,
                 audioBackend = null,
-                maxNumTokens = 8_192,
+                maxNumTokens = maxContextTokens,
                 cacheDir = context.externalCacheDir?.absolutePath,
             )
             engine = Engine(cpuConfig).also { it.initialize() }
             backendLabel = "CPU"
             Log.i(TAG, "Engine initialized on CPU in ${System.currentTimeMillis() - startedAt}ms total")
         }
+    }
+
+    override fun getMaxContextTokens(): Int {
+        return maxContextTokens
     }
 
     override fun generate(systemInstruction: String, prompt: String): String {
@@ -88,6 +95,7 @@ class LiteRtShortsLlmEngine(
         Log.i(TAG, "Inference started: backend=$backendLabel, promptChars=${prompt.length}, estimatedInputTokens=$estimatedInputTokens, systemChars=${systemInstruction.length}")
         val phase = AtomicReference("closing previous conversation")
         val firstTokenSeen = AtomicBoolean(false)
+        val cancelledIntentionally = AtomicBoolean(false)
         val messageCount = AtomicInteger(0)
         val outputChars = AtomicInteger(0)
         val heartbeatCount = AtomicInteger(0)
@@ -154,6 +162,12 @@ class LiteRtShortsLlmEngine(
                         if (now - lastProgressLogAt.get() >= 2_000 && lastProgressLogAt.compareAndSet(lastProgressLogAt.get(), now)) {
                             Log.i(TAG, "Inference generating: elapsedMs=${now - startedAt}, callbacks=$callbacks, outputChars=$length")
                         }
+                        if (callbacks > 1200 || length > 5000) {
+                            if (cancelledIntentionally.compareAndSet(false, true)) {
+                                Log.w(TAG, "Inference output limit exceeded (callbacks=$callbacks, chars=$length); cancelling process to prevent infinite loop.")
+                                current.cancelProcess()
+                            }
+                        }
                     }
 
                     override fun onDone() {
@@ -164,15 +178,21 @@ class LiteRtShortsLlmEngine(
 
                     override fun onError(throwable: Throwable) {
                         phase.set("failed")
-                        Log.e(TAG, "Inference failed after ${System.currentTimeMillis() - startedAt}ms: ${throwable.message}", throwable)
-                        failure.set(throwable)
+                        if (cancelledIntentionally.get()) {
+                            val limitExceeded = IllegalStateException("Gemma output limit exceeded (possible loop)", throwable)
+                            Log.e(TAG, "Inference cancelled intentionally: limit exceeded", limitExceeded)
+                            failure.set(limitExceeded)
+                        } else {
+                            Log.e(TAG, "Inference failed after ${System.currentTimeMillis() - startedAt}ms: ${throwable.message}", throwable)
+                            failure.set(throwable)
+                        }
                         latch.countDown()
                     }
                 },
                 emptyMap(),
             )
             if (latch.count > 0 && !firstTokenSeen.get()) phase.set("native prefill / waiting for first token")
-            if (!latch.await(20, TimeUnit.MINUTES)) {
+            if (!latch.await(5, TimeUnit.MINUTES)) {
                 phase.set("timed out")
                 Log.e(TAG, "Inference timed out after ${System.currentTimeMillis() - startedAt}ms")
                 current.cancelProcess()

@@ -1,7 +1,6 @@
 package com.serhat.autosub;
 
 import android.graphics.Matrix;
-import android.graphics.RectF;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -187,30 +186,14 @@ public class ShortsReviewFragment extends Fragment {
         float scaledWidth = videoWidth * scale;
         float scaledHeight = videoHeight * scale;
         long localMs = player == null ? 0 : Math.max(0, player.getCurrentPosition() - current.getStartMs());
-        float position = current.getCropPositionAt(localMs);
+        boolean smooth = viewModel != null && Boolean.TRUE.equals(viewModel.getShortsSmoothAutoFraming().getValue());
+        float position = current.getCropPositionAt(localMs, smooth);
         float dx = (viewWidth - scaledWidth) * position;
         float dy = (viewHeight - scaledHeight) / 2f;
         Matrix matrix = new Matrix();
         matrix.setScale(scaledWidth / viewWidth, scaledHeight / viewHeight);
         matrix.postTranslate(dx, dy);
         texture.setTransform(matrix);
-        updateFaceTrackingOverlay(localMs, scaledWidth, scaledHeight, dx, dy);
-    }
-
-    private void updateFaceTrackingOverlay(long localMs, float scaledWidth, float scaledHeight,
-                                           float dx, float dy) {
-        ShortsCropKeyframe frame = current == null ? null : current.getCropKeyframeAt(localMs);
-        if (frame == null || !frame.hasFaceBounds()) {
-            binding.faceTrackingOverlay.clearFace();
-            return;
-        }
-        float centerX = dx + frame.getFaceCenterX() * scaledWidth;
-        float centerY = dy + frame.getFaceCenterY() * scaledHeight;
-        float width = frame.getFaceWidth() * scaledWidth;
-        float height = frame.getFaceHeight() * scaledHeight;
-        RectF bounds = new RectF(centerX - width / 2f, centerY - height / 2f,
-                centerX + width / 2f, centerY + height / 2f);
-        binding.faceTrackingOverlay.setFaceBounds(bounds.left, bounds.top, bounds.right, bounds.bottom);
     }
 
     private void runAutoFraming() {

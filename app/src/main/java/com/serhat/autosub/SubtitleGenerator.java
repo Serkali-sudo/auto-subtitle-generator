@@ -80,6 +80,9 @@ public class SubtitleGenerator {
     public static final int DEFAULT_MAX_SUBTITLE_LENGTH = 42;
     public static final int MIN_SUBTITLE_LENGTH = 24;
     public static final int MAX_SUBTITLE_LENGTH_LIMIT = 96;
+    public static final int DEFAULT_MAX_WORDS_PER_SUBTITLE = 10;
+    public static final int MIN_WORDS_PER_SUBTITLE = 3;
+    public static final int MAX_WORDS_PER_SUBTITLE_LIMIT = 25;
     public static final boolean DEFAULT_KEEP_SENTENCES_TOGETHER = true;
     public static final String VAD_MODEL_WEBRTC = "webrtc";
     public static final String VAD_MODEL_SILERO = "silero";
@@ -113,6 +116,7 @@ public class SubtitleGenerator {
     private File audioFile;
     private boolean wordByWordMode = false;
     private volatile int maxSubtitleLength = DEFAULT_MAX_SUBTITLE_LENGTH;
+    private volatile int maxWordsPerSubtitle = DEFAULT_MAX_WORDS_PER_SUBTITLE;
     private volatile boolean keepSentencesTogether = DEFAULT_KEEP_SENTENCES_TOGETHER;
     private volatile boolean suppressWhisperSdh = true;
     private volatile boolean whisperVadEnabled = false;
@@ -131,6 +135,11 @@ public class SubtitleGenerator {
     public void setMaxSubtitleLength(int maxSubtitleLength) {
         this.maxSubtitleLength = Math.max(MIN_SUBTITLE_LENGTH,
                 Math.min(MAX_SUBTITLE_LENGTH_LIMIT, maxSubtitleLength));
+    }
+
+    public void setMaxWordsPerSubtitle(int maxWordsPerSubtitle) {
+        this.maxWordsPerSubtitle = Math.max(MIN_WORDS_PER_SUBTITLE,
+                Math.min(MAX_WORDS_PER_SUBTITLE_LIMIT, maxWordsPerSubtitle));
     }
 
     public void setKeepSentencesTogether(boolean keepSentencesTogether) {
@@ -583,7 +592,7 @@ public class SubtitleGenerator {
                         startTime = wordStart;
                     }
                     
-                    if (currentSubtitle.length() + word.length() + 1 > maxSubtitleLength) {
+                    if (currentSubtitle.length() + word.length() + 1 > maxSubtitleLength || currentWords.size() >= maxWordsPerSubtitle) {
                         if (VERBOSE_SUBTITLE_LOGS) {
                             Log.d(TAG, "Vosk subtitle entry: startMs=" + (long)(startTime * 1000) + ", endMs=" + (long)(endTime * 1000) + ", text=\"" + currentSubtitle.toString().trim() + "\"");
                         }
@@ -750,19 +759,22 @@ public class SubtitleGenerator {
     private void addWrappedWords(String text, List<String> result) {
         String[] words = text.split("\\s+");
         StringBuilder currentLine = new StringBuilder();
+        int wordCount = 0;
 
         for (String word : words) {
             int nextLength = currentLine.length() == 0
                     ? word.length()
                     : currentLine.length() + 1 + word.length();
-            if (nextLength > maxSubtitleLength && currentLine.length() > 0) {
+            if ((nextLength > maxSubtitleLength || wordCount >= maxWordsPerSubtitle) && currentLine.length() > 0) {
                 result.add(currentLine.toString().trim());
                 currentLine = new StringBuilder();
+                wordCount = 0;
             }
             if (currentLine.length() > 0) {
                 currentLine.append(" ");
             }
             currentLine.append(word);
+            wordCount++;
         }
 
         if (currentLine.length() > 0) {
@@ -1172,7 +1184,9 @@ public class SubtitleGenerator {
                 File exportDir = resolveOutputDir(outputDir);
                 String inputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri);
                 List<SubtitleEntry> rebased = rebaseClipSubtitles(subtitles, candidate.getStartMs(), candidate.getEndMs());
-                String filter = buildVerticalCropFilter(candidate);
+                boolean smooth = context.getSharedPreferences("autosub_settings", Context.MODE_PRIVATE)
+                        .getBoolean("shorts_smooth_auto_framing", false);
+                String filter = buildVerticalCropFilter(candidate, smooth);
                 if (candidate.isBurnCaptions() && !rebased.isEmpty()) {
                     setupFontDirectories();
                     assFile = new File(context.getCacheDir(), "short_" + candidate.getId() + "_" + System.nanoTime() + ".ass");
@@ -1224,24 +1238,47 @@ public class SubtitleGenerator {
     }
 
     static String buildVerticalCropFilter(ShortsCandidate candidate) {
+        return buildVerticalCropFilter(candidate, false);
+    }
+
+    static String buildVerticalCropFilter(ShortsCandidate candidate, boolean smooth) {
         if (candidate == null || !candidate.hasAutoFraming()) {
             return buildVerticalCropFilter(candidate == null ? 0.5f : candidate.getCropPosition());
         }
-        String expression = buildCropPositionExpression(candidate.getCropKeyframes());
+        String expression = buildCropPositionExpression(candidate.getCropKeyframes(), smooth);
         return "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:" +
                 "(iw-ow)*(" + expression + "):(ih-oh)/2,setsar=1";
     }
 
     static String buildCropPositionExpression(List<ShortsCropKeyframe> keyframes) {
+        return buildCropPositionExpression(keyframes, false);
+    }
+
+    static String buildCropPositionExpression(List<ShortsCropKeyframe> keyframes, boolean smooth) {
         if (keyframes == null || keyframes.isEmpty()) return "0.5000";
         String expression = String.format(Locale.US, "%.4f",
                 keyframes.get(keyframes.size() - 1).getPosition());
         for (int i = keyframes.size() - 2; i >= 0; i--) {
             ShortsCropKeyframe left = keyframes.get(i);
             ShortsCropKeyframe right = keyframes.get(i + 1);
-            expression = String.format(Locale.US, "if(lt(t\\,%.3f)\\,%s\\,%s)",
-                    right.getTimeMs() / 1000d,
-                    String.format(Locale.US, "%.4f", left.getPosition()), expression);
+            double t1 = left.getTimeMs() / 1000.0;
+            double t2 = right.getTimeMs() / 1000.0;
+            double y1 = left.getPosition();
+            double y2 = right.getPosition();
+            if (!smooth) {
+                expression = String.format(Locale.US, "if(lt(t\\,%.3f)\\,%.4f\\,%s)",
+                        t2, y1, expression);
+            } else {
+                double duration = t2 - t1;
+                if (duration <= 0.002) {
+                    expression = String.format(Locale.US, "if(lt(t\\,%.3f)\\,%.4f\\,%s)",
+                            t2, y1, expression);
+                } else {
+                    double slope = (y2 - y1) / duration;
+                    expression = String.format(Locale.US, "if(lt(t\\,%.3f)\\,%.4f+(t-%.3f)*%.4f\\,%s)",
+                            t2, y1, t1, slope, expression);
+                }
+            }
         }
         return expression;
     }
@@ -1315,7 +1352,22 @@ public class SubtitleGenerator {
             writer.write("[Events]\n");
             writer.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
 
-            for (SubtitleEntry entry : subtitles) {
+            List<SubtitleEntry> finalSubtitles = subtitles;
+            if (!style.isWordByWord() && layerMode != SubtitleLayerMode.DOUBLE) {
+                List<WordTiming> allWords = new ArrayList<>();
+                for (SubtitleEntry entry : subtitles) {
+                    allWords.addAll(entry.getWords());
+                }
+                if (!allWords.isEmpty()) {
+                    List<SubtitleEntry> rechunked = new ArrayList<>();
+                    addTimedSubtitleChunks(rechunked, allWords);
+                    if (!rechunked.isEmpty()) {
+                        finalSubtitles = rechunked;
+                    }
+                }
+            }
+
+            for (SubtitleEntry entry : finalSubtitles) {
                 if (style.isWordByWord() && layerMode != SubtitleLayerMode.DOUBLE
                         && entry.getWords() != null && !entry.getWords().isEmpty()) {
                     for (WordTiming word : entry.getWords()) {
@@ -2577,8 +2629,9 @@ public class SubtitleGenerator {
                     && word.getStartMs() - currentWords.get(currentWords.size() - 1).getEndMs()
                     > WHISPER_WORD_GAP_SPLIT_MS;
             boolean sentenceBoundary = currentText.length() > 0 && endsSentence(currentText.toString());
+            boolean wordCountBoundary = currentWords.size() >= maxWordsPerSubtitle;
             boolean lengthBoundary = !keepSentencesTogether && nextLength > maxSubtitleLength;
-            if (!currentWords.isEmpty() && (timeGapBoundary || lengthBoundary || sentenceBoundary)) {
+            if (!currentWords.isEmpty() && (timeGapBoundary || lengthBoundary || wordCountBoundary || sentenceBoundary)) {
                 addSubtitleChunk(subtitles, currentWords, currentText.toString());
                 currentWords = new ArrayList<>();
                 currentText = new StringBuilder();

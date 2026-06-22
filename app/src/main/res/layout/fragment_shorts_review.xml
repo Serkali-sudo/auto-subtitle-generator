@@ -21,13 +21,6 @@
             app:resize_mode="fill"
             app:show_buffering="when_playing"
             app:surface_type="texture_view" />
-
-        <com.serhat.autosub.FaceTrackingOverlayView
-            android:id="@+id/faceTrackingOverlay"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clickable="false"
-            android:focusable="false" />
     </FrameLayout>
 
     <LinearLayout

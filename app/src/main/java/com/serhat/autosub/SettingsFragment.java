@@ -303,6 +303,10 @@ public class SettingsFragment extends Fragment {
             viewModel.setSkipShortsDialog(isChecked);
         });
 
+        binding.shortsSmoothAutoFramingSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            viewModel.setShortsSmoothAutoFraming(isChecked);
+        });
+
         binding.completionNotificationsSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
             viewModel.setShowCompletionNotifications(isChecked);
         });
@@ -435,6 +439,10 @@ public class SettingsFragment extends Fragment {
 
         viewModel.getSkipShortsDialog().observe(getViewLifecycleOwner(), skip -> {
             binding.skipShortsDialogSwitch.setChecked(skip);
+        });
+
+        viewModel.getShortsSmoothAutoFraming().observe(getViewLifecycleOwner(), enabled -> {
+            binding.shortsSmoothAutoFramingSwitch.setChecked(Boolean.TRUE.equals(enabled));
         });
 
         viewModel.getShowCompletionNotifications().observe(getViewLifecycleOwner(), enabled -> {
