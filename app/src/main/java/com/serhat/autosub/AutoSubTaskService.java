@@ -39,6 +39,7 @@ public class AutoSubTaskService extends Service {
         default void onGemmaStateChanged(boolean installed, boolean downloading, int progress,
                                          String speed, String eta, boolean paused, String error) {}
         default void onShortsProjectChanged(ShortsProject project, String error) {}
+        default void onShortsExportCompleted(String filePath) {}
     }
 
     public static final String ACTION_CANCEL_MEDIA = "com.serhat.autosub.CANCEL_MEDIA";
@@ -50,7 +51,7 @@ public class AutoSubTaskService extends Service {
     private static final String MEDIA_WAKE_LOCK_TAG = "AutoSub:MediaProcessing";
     private static final String PREFS_SETTINGS = "autosub_settings";
     private static final String KEY_BATCH_FORMAT = "batch_format";
-    private static final String KEY_SUBTITLE_MAX_LENGTH = "subtitle_max_length";
+    private static final String KEY_SUBTITLE_MAX_WORDS = "subtitle_max_words_per_subtitle";
     private static final String KEY_KEEP_SENTENCES_TOGETHER = "keep_sentences_together";
     private static final String KEY_SUPPRESS_WHISPER_SDH = "suppress_whisper_sdh";
     private static final String KEY_WHISPER_VAD_ENABLED = "whisper_vad_enabled";
@@ -523,6 +524,9 @@ public class AutoSubTaskService extends Service {
         }
         if (queueRunning || batchRunning) { publishShortsProject(null, "Wait for the current media task to finish"); return; }
 
+        QueueItem.Status previousStatus = item.getStatus();
+        int previousProgress = item.getProgress();
+        String previousMessage = item.getMessage();
         shortsAnalyzing = true;
         Log.i(SHORTS_TAG, "Service analysis requested: queueItemId=" + item.getId() +
                 ", subtitleEntries=" + item.getSubtitles().size() + ", requestedClips=" + desiredCount +
@@ -535,8 +539,9 @@ public class AutoSubTaskService extends Service {
         modelStatusText = "Speech model temporarily unloaded to free memory";
         subtitleGenerator.unloadModel();
         publishModelState();
+        updateShortsAnalysisQueueItem(item, "Preparing the local Shorts editor...");
         beginForeground(AutoSubTaskState.TaskType.GEMMA_MODEL_LOAD,
-                "Loading Gemma 4 E2B", "Preparing the local Shorts editor...", -1);
+                "Loading Gemma 4 E2B", "Preparing the local Shorts editor...", -1, item.getId());
         ShortsAnalysisRequest request = new ShortsAnalysisRequest(item.getId(), item.getSubtitles(),
                 desiredCount, minSeconds, maxSeconds, focusPrompt);
         new Thread(() -> {
@@ -547,13 +552,19 @@ public class AutoSubTaskService extends Service {
                 int maxContextTokens = Math.max(8192, Math.min(32768, estimatedTokens + 4000));
                 activeShortsEngine = ShortsLlmEngineFactory.create(this, preferGpu);
                 activeShortsEngine.initialize(gemmaModelManager.getModelFile(), maxContextTokens);
-                handler.post(() -> beginForeground(AutoSubTaskState.TaskType.SHORTS_ANALYSIS,
-                        "Finding Shorts", "Analyzing the complete transcript...", 0));
+                handler.post(() -> {
+                    updateShortsAnalysisQueueItem(item, "Analyzing the complete transcript...");
+                    beginForeground(AutoSubTaskState.TaskType.SHORTS_ANALYSIS,
+                            "Finding Shorts", "Analyzing the complete transcript...", -1, item.getId());
+                });
                 ShortsTranscriptAnalyzer analyzer = new ShortsTranscriptAnalyzer(activeShortsEngine);
                 List<ShortsCandidate> candidates = analyzer.analyze(request, (progress, message) ->
-                        handler.post(() -> publishState(new AutoSubTaskState(AutoSubTaskState.TaskType.SHORTS_ANALYSIS,
-                                "Finding Shorts", message, progress, item.getId(), null, "", "", false,
-                                false, queuedDownloadIds()))));
+                        handler.post(() -> {
+                            updateShortsAnalysisQueueItem(item, message);
+                            publishState(new AutoSubTaskState(AutoSubTaskState.TaskType.SHORTS_ANALYSIS,
+                                    "Finding Shorts", message, -1, item.getId(), null, "", "", false,
+                                    false, queuedDownloadIds()));
+                        }));
                 project = new ShortsProject(item.getId(), request.getFocusPrompt(), request.getDesiredCount(),
                         request.getMinDurationSeconds(), request.getMaxDurationSeconds());
                 project.setCandidates(candidates);
@@ -572,12 +583,23 @@ public class AutoSubTaskService extends Service {
                 Log.i(SHORTS_TAG, "Service analysis finished: candidates=" +
                         (finalProject == null ? 0 : finalProject.getCandidates().size()) +
                         ", error=" + (finalError.isEmpty() ? "none" : finalError));
+                item.setStatus(previousStatus);
+                item.setProgress(previousProgress);
+                item.setMessage(previousMessage);
+                publishQueueItems(item);
                 shortsAnalyzing = false;
                 publishShortsProject(finalProject, finalError);
                 currentState = AutoSubTaskState.idle(false, queuedDownloadIds());
                 initializeSelectedModel(true);
             });
         }, "shorts-analysis").start();
+    }
+
+    private void updateShortsAnalysisQueueItem(QueueItem item, String message) {
+        item.setStatus(QueueItem.Status.ANALYZING_SHORTS);
+        item.setProgress(-1);
+        item.setMessage(message == null || message.trim().isEmpty() ? "Finding Shorts..." : message);
+        publishQueueItems(item);
     }
 
     public void cancelShortsAnalysis() { if (activeShortsEngine != null) activeShortsEngine.cancel(); }
@@ -602,6 +624,172 @@ public class AutoSubTaskService extends Service {
         exportNextShort(item, project, selected, 0, outputDir);
     }
 
+    public void exportPhraseMontage(QueueItem item, ShortsProject project, File outputDir,
+                                    SubtitleGenerator.VideoExportCallback callback) {
+        if (item == null || project == null || !project.isPhraseMontage()) {
+            callback.onError("No phrase montage is ready");
+            return;
+        }
+        if (batchRunning || queueRunning || shortsAnalyzing) {
+            callback.onError("Wait for the current media task to finish");
+            return;
+        }
+        batchRunning = true;
+        for (ShortsCandidate candidate : project.getCandidates()) {
+            if (candidate.isSelected()) {
+                candidate.setRenderState(ShortsCandidate.RenderState.RENDERING);
+                candidate.setErrorMessage("");
+            }
+        }
+        shortsProjectStore.save(project);
+        publishShortsProject(project, "");
+        item.setStatus(QueueItem.Status.EXPORTING);
+        item.setProgress(-1);
+        item.setMessage("Creating phrase montage...");
+        queueStore.updateItem(item);
+        publishQueueItems();
+        beginForeground(AutoSubTaskState.TaskType.SHORTS_EXPORT,
+                "Creating phrase montage", "Finding and joining every match...", -1, item.getId());
+
+        subtitleGenerator.exportPhraseMontage(item.getVideoUri(), project.getCandidates(),
+                project.getPhrase(), outputDir, new SubtitleGenerator.VideoExportCallback() {
+                    @Override public void onVideoExported(String filePath) {
+                        handler.post(() -> {
+                            batchRunning = false;
+                            registerExport(filePath, ExportRecord.TYPE_VIDEO, item.getVideoUri(),
+                                    item.getDisplayName(), "phrase-montage", "mp4", selectedModelInfo);
+                            for (ShortsCandidate candidate : project.getCandidates()) {
+                                if (candidate.isSelected()) {
+                                    candidate.setRenderState(ShortsCandidate.RenderState.EXPORTED);
+                                    candidate.setOutputPath(filePath);
+                                }
+                            }
+                            shortsProjectStore.save(project);
+                            publishShortsProject(project, "");
+                            item.setStatus(QueueItem.Status.COMPLETED);
+                            item.setProgress(100);
+                            item.setOutputPath(filePath);
+                            item.setMessage("Phrase montage exported: " + filePath);
+                            queueStore.updateItem(item);
+                            publishQueueItems();
+                            showSuccessNotificationIfEnabled(2041, "Phrase montage ready",
+                                    item.getDisplayName());
+                            publishIdleStateIfNoWork();
+                            callback.onVideoExported(filePath);
+                        });
+                    }
+
+                    @Override public void onError(String errorMessage) {
+                        handler.post(() -> {
+                            batchRunning = false;
+                            for (ShortsCandidate candidate : project.getCandidates()) {
+                                if (candidate.isSelected()) {
+                                    candidate.setRenderState(ShortsCandidate.RenderState.FAILED);
+                                    candidate.setErrorMessage(errorMessage);
+                                }
+                            }
+                            shortsProjectStore.save(project);
+                            publishShortsProject(project, errorMessage);
+                            item.setStatus(QueueItem.Status.COMPLETED);
+                            item.setProgress(100);
+                            item.setMessage(errorMessage);
+                            queueStore.updateItem(item);
+                            publishQueueItems();
+                            publishIdleStateIfNoWork();
+                            callback.onError(errorMessage);
+                        });
+                    }
+
+                    @Override public void onProgressUpdate(int progress) {
+                        handler.post(() -> {
+                            item.setProgress(progress < 100 ? -1 : 100);
+                            publishQueueItems(item);
+                            callback.onProgressUpdate(progress < 100 ? -1 : 100);
+                        });
+                    }
+                });
+    }
+
+    public void exportCondensedQueueItem(QueueItem item, boolean useVad, File outputDir,
+                                         SubtitleGenerator.VideoExportCallback callback) {
+        exportCondensedQueueItem(item, useVad, outputDir, SubtitleGenerator.CondensedOutputMode.VIDEO,
+                SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void exportCondensedQueueItem(QueueItem item, boolean useVad, File outputDir,
+                                         SubtitleGenerator.CondensedOutputMode outputMode,
+                                         SubtitleGenerator.SubtitleLayerMode layerMode,
+                                         SubtitleGenerator.VideoExportCallback callback) {
+        if (item == null || item.getSubtitles() == null || item.getSubtitles().isEmpty()) {
+            callback.onError("Generate subtitles for this video first");
+            return;
+        }
+        if (batchRunning || queueRunning || shortsAnalyzing) {
+            callback.onError("Wait for the current media task to finish");
+            return;
+        }
+        batchRunning = true;
+        subtitleGenerator.setWhisperVadModel(settingsPrefs.getString(
+                KEY_WHISPER_VAD_MODEL, SubtitleGenerator.VAD_MODEL_WEBRTC));
+        subtitleGenerator.setWhisperVadAggressiveness(settingsPrefs.getString(
+                KEY_WHISPER_VAD_AGGRESSIVENESS, SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL));
+        item.setStatus(QueueItem.Status.EXPORTING);
+        item.setProgress(-1);
+        item.setMessage(useVad ? "Removing silence with VAD..." : "Creating continuous talk cut...");
+        queueStore.updateItem(item);
+        publishQueueItems();
+        beginForeground(AutoSubTaskState.TaskType.VIDEO_EXPORT,
+                useVad ? "Removing silence" : "Creating continuous talk cut",
+                item.getDisplayName(), -1, item.getId());
+        subtitleGenerator.exportCondensedVideo(item.getVideoUri(), item.getSubtitles(), useVad,
+                false, 0, 0, 0.5f, outputDir, useVad ? "silence-removed" : "talk-only",
+                outputMode, layerMode,
+                new SubtitleGenerator.VideoExportCallback() {
+                    @Override public void onVideoExported(String filePath) {
+                        handler.post(() -> {
+                            batchRunning = false;
+                            boolean subtitleFile = outputMode == SubtitleGenerator.CondensedOutputMode.SRT
+                                    || outputMode == SubtitleGenerator.CondensedOutputMode.VTT;
+                            String extension = subtitleFile
+                                    ? (outputMode == SubtitleGenerator.CondensedOutputMode.SRT ? "srt" : "vtt")
+                                    : "mp4";
+                            registerExport(filePath, subtitleFile ? ExportRecord.TYPE_SUBTITLE : ExportRecord.TYPE_VIDEO, item.getVideoUri(),
+                                    item.getDisplayName(), useVad ? "silence-removed" : "talk-only",
+                                    extension, selectedModelInfo);
+                            item.setStatus(QueueItem.Status.COMPLETED);
+                            item.setProgress(100);
+                            item.setOutputPath(filePath);
+                            item.setMessage((subtitleFile ? "Subtitles" : "Video") + " exported: " + filePath);
+                            queueStore.updateItem(item);
+                            publishQueueItems();
+                            publishIdleStateIfNoWork();
+                            callback.onVideoExported(filePath);
+                        });
+                    }
+
+                    @Override public void onError(String errorMessage) {
+                        handler.post(() -> {
+                            batchRunning = false;
+                            item.setStatus(QueueItem.Status.COMPLETED);
+                            item.setProgress(100);
+                            item.setMessage(errorMessage);
+                            queueStore.updateItem(item);
+                            publishQueueItems();
+                            publishIdleStateIfNoWork();
+                            callback.onError(errorMessage);
+                        });
+                    }
+
+                    @Override public void onProgressUpdate(int progress) {
+                        handler.post(() -> {
+                            item.setProgress(progress < 100 ? -1 : 100);
+                            publishQueueItems(item);
+                            callback.onProgressUpdate(progress < 100 ? -1 : 100);
+                        });
+                    }
+                });
+    }
+
     private void exportNextShort(QueueItem item, ShortsProject project, List<ShortsCandidate> selected,
                                  int index, File outputDir) {
         if (shortsExportCancelRequested) {
@@ -617,6 +805,17 @@ public class AutoSubTaskService extends Service {
             shortsProjectStore.save(project);
             publishShortsProject(project, "");
             showSuccessNotificationIfEnabled(2040, "Shorts exported", selected.size() + " clips are ready in Exports");
+            String completedPath = "";
+            for (ShortsCandidate candidate : selected) {
+                if (candidate.getOutputPath() != null && !candidate.getOutputPath().isEmpty()) {
+                    completedPath = candidate.getOutputPath();
+                }
+            }
+            if (!completedPath.isEmpty()) {
+                for (Listener listener : new ArrayList<>(listeners)) {
+                    listener.onShortsExportCompleted(completedPath);
+                }
+            }
             publishIdleStateIfNoWork();
             return;
         }
@@ -633,8 +832,7 @@ public class AutoSubTaskService extends Service {
                 settingsPrefs.getFloat("shorts_caption_size", 30f),
                 settingsPrefs.getBoolean("shorts_uppercase", true),
                 settingsPrefs.getBoolean("shorts_mode_word_by_word", false), true);
-        subtitleGenerator.exportShortClip(item.getVideoUri(), item.getSubtitles(), candidate, outputDir, style,
-                new SubtitleGenerator.VideoExportCallback() {
+        SubtitleGenerator.VideoExportCallback exportCallback = new SubtitleGenerator.VideoExportCallback() {
                     @Override public void onVideoExported(String filePath) {
                         candidate.setRenderState(ShortsCandidate.RenderState.EXPORTED);
                         candidate.setOutputPath(filePath);
@@ -653,7 +851,19 @@ public class AutoSubTaskService extends Service {
                     }
 
                     @Override public void onProgressUpdate(int progress) { }
-                });
+                };
+        if (project.isRemoveSilence()) {
+            subtitleGenerator.setWhisperVadModel(settingsPrefs.getString(
+                    KEY_WHISPER_VAD_MODEL, SubtitleGenerator.VAD_MODEL_WEBRTC));
+            subtitleGenerator.setWhisperVadAggressiveness(settingsPrefs.getString(
+                    KEY_WHISPER_VAD_AGGRESSIVENESS, SubtitleGenerator.VAD_AGGRESSIVENESS_NORMAL));
+            subtitleGenerator.exportCondensedVideo(item.getVideoUri(), item.getSubtitles(), true,
+                    true, candidate.getStartMs(), candidate.getEndMs(), candidate.getCropPosition(),
+                    outputDir, "short-vad-" + Math.max(1, candidate.getId()), exportCallback);
+        } else {
+            subtitleGenerator.exportShortClip(item.getVideoUri(), item.getSubtitles(), candidate,
+                    outputDir, style, exportCallback);
+        }
     }
 
     public void startQueue() {
@@ -971,10 +1181,8 @@ public class AutoSubTaskService extends Service {
         // The item's shorts flag already captures the word-by-word choice made when it was queued.
         boolean useWordByWord = queueItem.isShortsVideo();
         subtitleGenerator.setWordByWordMode(useWordByWord);
-        subtitleGenerator.setMaxSubtitleLength(settingsPrefs.getInt(
-                KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH));
         subtitleGenerator.setMaxWordsPerSubtitle(settingsPrefs.getInt(
-                "shorts_max_words_per_subtitle", SubtitleGenerator.DEFAULT_MAX_WORDS_PER_SUBTITLE));
+                KEY_SUBTITLE_MAX_WORDS, SubtitleGenerator.DEFAULT_MAX_WORDS_PER_SUBTITLE));
         subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));
@@ -1333,11 +1541,16 @@ public class AutoSubTaskService extends Service {
     }
 
     private void beginForeground(AutoSubTaskState.TaskType taskType, String title, String message, int progress) {
+        beginForeground(taskType, title, message, progress, -1);
+    }
+
+    private void beginForeground(AutoSubTaskState.TaskType taskType, String title, String message,
+                                 int progress, long activeQueueItemId) {
         if (!startedForWork) {
             startedForWork = true;
             startService(new Intent(this, AutoSubTaskService.class));
         }
-        publishState(new AutoSubTaskState(taskType, title, message, progress, -1, activeDownloadModelId,
+        publishState(new AutoSubTaskState(taskType, title, message, progress, activeQueueItemId, activeDownloadModelId,
                 activeDownloadSpeedText, activeDownloadEtaText, activeDownloadPaused, queueRunning,
                 queuedDownloadIds()));
     }

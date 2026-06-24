@@ -78,7 +78,9 @@ public final class GemmaModelManager {
                         output.write(buffer, 0, read);
                         received += read;
                         long now = System.currentTimeMillis();
-                        if (now - lastTime >= 500) {
+                        // Gemma is multi-gigabyte; updating Android UI and notifications twice a
+                        // second for the entire download causes avoidable main-thread churn.
+                        if (now - lastTime >= 1000) {
                             long bytesPerSecond = Math.max(1, (received - lastBytes) * 1000 / (now - lastTime));
                             long remainingSeconds = total > received ? (total - received) / bytesPerSecond : 0;
                             callback.onProgress(total > 0 ? (int) Math.min(99, received * 100 / total) : -1,

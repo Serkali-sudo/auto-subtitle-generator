@@ -145,6 +145,52 @@ public class ShortsTranscriptAnalyzerTest {
         assertFalse(repaired.contains(",\\s*,"));
     }
 
+    @Test public void repairsGemmaMissingOpeningQuotesWithoutInferenceRetry() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        ShortsLlmEngine engine = new CapturingEngine() {
+            @Override public String generate(String system, String prompt) {
+                calls.incrementAndGet();
+                return "```json {\"clips\":[{\"ids\":[S12,S30],"
+                        + "\"title\": Cash is surprisingly heavy\","
+                        + "\"hook\":\"Who knew cash could be that heavy?\","
+                        + "\"reason\":\"A surprising and relatable moment.\","
+                        + "\"score\":85\"}]} ```";
+            }
+        };
+
+        List<ShortsCandidate> result = new ShortsTranscriptAnalyzer(engine).analyze(
+                new ShortsAnalysisRequest(1, transcript(186, "A useful sentence"), 1, 20, 60, ""), null);
+
+        assertEquals(1, calls.get());
+        assertEquals(1, result.size());
+        assertEquals("Cash is surprisingly heavy", result.get(0).getTitle());
+        assertEquals(85, result.get(0).getScore());
+    }
+
+    @Test public void allowsDurationWithinTolerance() throws Exception {
+        ShortsLlmEngine engine = new CapturingEngine() {
+            @Override public String generate(String system, String prompt) {
+                return "{\"clips\":[{\"ids\":[\"S1\",\"S59\"],\"title\":\"Tolerance test\",\"hook\":\"Watch this\",\"reason\":\"Close enough\",\"score\":95}]}";
+            }
+        };
+        List<ShortsCandidate> result = new ShortsTranscriptAnalyzer(engine).analyze(
+                new ShortsAnalysisRequest(1, transcript(59, "Word"), 1, 60, 60, ""), null);
+        assertEquals(1, result.size());
+        assertEquals(59_000L, result.get(0).getDurationMs());
+    }
+
+    @Test public void scalesHighScoresDown() throws Exception {
+        ShortsLlmEngine engine = new CapturingEngine() {
+            @Override public String generate(String system, String prompt) {
+                return "{\"clips\":[{\"ids\":[\"S1\",\"S10\"],\"title\":\"High score test\",\"hook\":\"Watch this\",\"reason\":\"Tense confrontation\",\"score\":925}]}";
+            }
+        };
+        List<ShortsCandidate> result = new ShortsTranscriptAnalyzer(engine).analyze(
+                new ShortsAnalysisRequest(1, transcript(20, "Word"), 1, 5, 20, ""), null);
+        assertEquals(1, result.size());
+        assertEquals(93, result.get(0).getScore());
+    }
+
     private static List<SubtitleGenerator.SubtitleEntry> transcript(int count, String text) {
         List<SubtitleGenerator.SubtitleEntry> result = new ArrayList<>();
         for (int i = 0; i < count; i++) {

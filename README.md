@@ -139,9 +139,13 @@ Settings include options for:
 - Word-by-word mode.
 - Skipping the shorts setup dialog.
 
-### AI Shorts extraction
+### Shorts extraction
 
-Completed queue items include a **Create Shorts** action on Android 12 and newer. The optional Gemma 4 E2B model analyzes the saved timestamped transcript entirely on-device and proposes five editable 20–60 second clips. The review screen supports clip selection, subtitle-snapped boundary edits, original/translated/bilingual hard captions, and a per-clip horizontal 9:16 crop. Selected clips export as 1080×1920 MP4 videos and appear in the export library.
+Completed queue items include a **Create Shorts** action. On Android 12 and newer, the optional Gemma 4 E2B model analyzes the saved timestamped transcript entirely on-device and proposes five editable 20–60 second clips. The review screen supports clip selection, subtitle-snapped boundary edits, original/translated/bilingual hard captions, and a per-clip horizontal 9:16 crop. Selected clips export as 1080×1920 MP4 videos and appear in the export library.
+
+Phrase montage mode does not require Gemma. Enter a word or phrase and AutoSub joins every timestamped occurrence into one video, either using exact word timing or expanding each match to its complete subtitle cue.
+
+Completed queue items also provide **Talk only**, which joins every subtitle cue into a continuous spoken cut, and **No silence**, which uses the selected WebRTC or Silero VAD settings to remove silent regions. VAD silence removal is also optional when exporting AI-selected Shorts.
 
 The LiteRT-LM model is approximately 2.6 GB and is managed from the Models screen with resumable downloads. Devices with less than 8 GB RAM receive a warning before loading it. Older Android versions retain all existing subtitle features but do not load the AI runtime.
 
@@ -185,7 +189,7 @@ Current settings include:
 - Recognition language / auto-detect (Whisper).
 - Subtitle translation, with source and target languages.
 - Voice Activity Detection model and sensitivity.
-- Maximum subtitle line length.
+- Maximum words per subtitle.
 - Keep sentences together.
 - Suppress non-speech (SDH) captions.
 - Batch subtitle export format.

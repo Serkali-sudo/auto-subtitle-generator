@@ -83,6 +83,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
     private FragmentPreviewBinding binding;
     private SubtitleAdapter subtitleAdapter;
     private ExoPlayer player;
+    private android.net.Uri loadedPlayerMediaUri;
     private ActionMode actionMode;
 
     private int currentHighlightedPosition = -1;
@@ -215,9 +216,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
         viewModel.getCurrentVideoUri().observe(getViewLifecycleOwner(), uri -> {
             if (uri != null) {
                 if (isUriAccessible(uri)) {
-                    player.setMediaItem(MediaItem.fromUri(uri));
-                    player.prepare();
-                    player.play();
+                    preparePlayerMediaIfChanged(uri);
                     binding.playerFrame.setVisibility(View.VISIBLE);
                     binding.fallbackWarningLayout.setVisibility(View.GONE);
                 } else {
@@ -225,9 +224,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                     String audioPath = selectedItem != null ? selectedItem.getAudioPath() : "";
                     java.io.File audioFile = new java.io.File(audioPath);
                     if (!audioPath.isEmpty() && audioFile.exists()) {
-                        player.setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(audioFile)));
-                        player.prepare();
-                        player.play();
+                        preparePlayerMediaIfChanged(android.net.Uri.fromFile(audioFile));
                         binding.playerFrame.setVisibility(View.VISIBLE);
                         
                         binding.fallbackWarningLayout.setVisibility(View.VISIBLE);
@@ -239,6 +236,8 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                     }
                 }
             } else {
+                loadedPlayerMediaUri = null;
+                player.clearMediaItems();
                 binding.playerFrame.setVisibility(View.GONE);
                 binding.fallbackWarningLayout.setVisibility(View.GONE);
             }
@@ -287,6 +286,14 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
         viewModel.getShortsCaptionY().observe(getViewLifecycleOwner(), y -> {
             binding.shortsOverlay.post(this::applyShortsCaptionPosition);
         });
+    }
+
+    private void preparePlayerMediaIfChanged(android.net.Uri mediaUri) {
+        if (mediaUri == null || mediaUri.equals(loadedPlayerMediaUri)) return;
+        loadedPlayerMediaUri = mediaUri;
+        player.setMediaItem(MediaItem.fromUri(mediaUri));
+        player.prepare();
+        player.play();
     }
 
     private void updatePlayerHeight(boolean isShorts) {
@@ -865,8 +872,12 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                         if (!hardSubtitles && shouldAskSoftSubtitleContainer()) {
                             chooseSubtitleLayerMode(this::choosePositionedSoftExportFormat);
                         } else {
-                            chooseSubtitleLayerMode(layerMode ->
+                            Runnable proceed = () -> chooseSubtitleLayerMode(layerMode ->
                                     startExport(hardSubtitles, hardSubtitles ? "RobotoRegular" : null, false, layerMode));
+                            QueueItem selected = viewModel.getSelectedQueueItem().getValue();
+                            if (hardSubtitles) HardSubtitleExportSettings.show(this,
+                                    selected == null ? null : selected.getVideoUri(), proceed::run);
+                            else proceed.run();
                         }
                     }
                 });

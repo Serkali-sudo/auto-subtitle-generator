@@ -81,11 +81,18 @@
             android:layout_marginTop="8dp"
             android:text="Auto frame speaker" />
 
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/removeSilenceSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Remove silence with VAD (captions off)" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/exportSelectedBT"
             android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:layout_marginTop="18dp"
+            android:layout_marginTop="10dp"
             android:text="Export selected"
             app:icon="@drawable/ri_export_line" />
     </LinearLayout>

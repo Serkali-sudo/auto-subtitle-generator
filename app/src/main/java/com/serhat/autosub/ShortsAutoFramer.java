@@ -45,6 +45,7 @@ public final class ShortsAutoFramer {
     // sample, skipping the dwell — that's the case where the wait felt like lag.
     private static final float STRONG_SWITCH_MARGIN = 2.2f;
     private static final long LOST_GRACE_MS = 300;
+    private static final float SPEECH_THRESHOLD = 0.10f;
 
     public interface ProgressListener { void onProgress(int percent, String message); }
     public interface CancellationSignal { boolean isCancelled(); }
@@ -116,7 +117,19 @@ public final class ShortsAutoFramer {
                         TrackState state = tracks.get(id);
                         if (state == null) { state = new TrackState(id); tracks.put(id, state); }
                         updateTrack(state, face, frame.getWidth(), frame.getHeight(), localMs);
-                        if (best == null || state.score > best.score) best = state;
+                        if (best == null) {
+                            best = state;
+                        } else {
+                            boolean stateSpeaking = state.activity > SPEECH_THRESHOLD;
+                            boolean bestSpeaking = best.activity > SPEECH_THRESHOLD;
+                            if (stateSpeaking && !bestSpeaking) {
+                                best = state;
+                            } else if (!stateSpeaking && bestSpeaking) {
+                                // Keep best
+                            } else {
+                                if (state.score > best.score) best = state;
+                            }
+                        }
                     }
                     // Pick the face to frame with hysteresis. Keep the committed speaker locked
                     // unless a different face has clearly led for SWITCH_DWELL samples in a row, or
@@ -134,16 +147,25 @@ public final class ShortsAutoFramer {
                         challengerId = Integer.MIN_VALUE;
                         challengerStreak = 0;
                     } else {
-                        if (best.id == challengerId) challengerStreak++;
-                        else { challengerId = best.id; challengerStreak = 1; }
-                        boolean clearLead = best.score > committed.score * SWITCH_MARGIN;
-                        boolean dominantLead = best.score > committed.score * STRONG_SWITCH_MARGIN;
-                        if (dominantLead || (challengerStreak >= SWITCH_DWELL && clearLead)) {
+                        boolean bestSpeaking = best.activity > SPEECH_THRESHOLD;
+                        boolean committedSpeaking = committed.activity > SPEECH_THRESHOLD;
+                        if (bestSpeaking && !committedSpeaking) {
+                            // Switch immediately to the speaking face if the committed one is silent
                             target = best;
                             challengerId = Integer.MIN_VALUE;
                             challengerStreak = 0;
                         } else {
-                            target = committed;
+                            if (best.id == challengerId) challengerStreak++;
+                            else { challengerId = best.id; challengerStreak = 1; }
+                            boolean clearLead = best.score > committed.score * SWITCH_MARGIN;
+                            boolean dominantLead = best.score > committed.score * STRONG_SWITCH_MARGIN;
+                            if (dominantLead || (challengerStreak >= SWITCH_DWELL && clearLead)) {
+                                target = best;
+                                challengerId = Integer.MIN_VALUE;
+                                challengerStreak = 0;
+                            } else {
+                                target = committed;
+                            }
                         }
                     }
 

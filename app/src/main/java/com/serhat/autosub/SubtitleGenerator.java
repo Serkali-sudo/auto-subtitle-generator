@@ -101,6 +101,14 @@ public class SubtitleGenerator {
         DOUBLE
     }
 
+    public enum CondensedOutputMode {
+        VIDEO,
+        SOFT_SUBTITLE_VIDEO,
+        HARD_SUBTITLE_VIDEO,
+        SRT,
+        VTT
+    }
+
     public static boolean isScanningSpeechProgress(int progress) {
         return progress == PROGRESS_SCANNING_SPEECH;
     }
@@ -127,6 +135,8 @@ public class SubtitleGenerator {
     private volatile boolean translationEnabled = false;
     private volatile String translationSourceLanguage = "auto";
     private volatile String translationTargetLanguage = "en";
+    private String cachedExportVadKey = "";
+    private List<SpeechWindow> cachedExportSpeechWindows = new ArrayList<>();
 
     public void setWordByWordMode(boolean enabled) {
         this.wordByWordMode = enabled;
@@ -439,6 +449,8 @@ public class SubtitleGenerator {
                 callback.onProgressUpdate(PROGRESS_PREPARING_AUDIO);
                 List<SubtitleEntry> subtitleEntries = processAudioFile(audioFile, callback);
 
+                normalizeSubtitleTimings(subtitleEntries);
+
                 if (isCancelled) {
                     callback.onCancelled();
                     return;
@@ -529,6 +541,7 @@ public class SubtitleGenerator {
                         String result = recognizer.getResult();
                         processRecognitionResult(result, subtitles);
                         if (shouldDispatchPartialUpdate(lastPartialUpdateMs)) {
+                            normalizeSubtitleTimings(subtitles);
                             callback.onPartialSubtitlesGenerated(new ArrayList<>(subtitles));
                         }
                     }
@@ -592,7 +605,7 @@ public class SubtitleGenerator {
                         startTime = wordStart;
                     }
                     
-                    if (currentSubtitle.length() + word.length() + 1 > maxSubtitleLength || currentWords.size() >= maxWordsPerSubtitle) {
+                    if (currentWords.size() >= maxWordsPerSubtitle) {
                         if (VERBOSE_SUBTITLE_LOGS) {
                             Log.d(TAG, "Vosk subtitle entry: startMs=" + (long)(startTime * 1000) + ", endMs=" + (long)(endTime * 1000) + ", text=\"" + currentSubtitle.toString().trim() + "\"");
                         }
@@ -902,7 +915,7 @@ public class SubtitleGenerator {
         return time.replace(',', '.');
     }
 
-    private String formatTime(long timeMs) {
+    private static String formatTime(long timeMs) {
         long hours = timeMs / 3600000;
         long minutes = (timeMs % 3600000) / 60000;
         long seconds = (timeMs % 60000) / 1000;
@@ -1126,8 +1139,9 @@ public class SubtitleGenerator {
 
                 String command;
                 if ((styledShorts || styledDouble) && burnSubtitles) {
-                    command = String.format("-i %s -vf ass=%s -q:v 1 -c:a copy %s",
-                            inputPath, subtitlePath, outputPath);
+                    command = String.format("-i %s -vf \"ass=%s%s\" %s -c:a copy %s",
+                            inputPath, subtitlePath, HardSubtitleExportSettings.videoFilterSuffix(context),
+                            HardSubtitleExportSettings.videoEncodingArguments(context), outputPath);
                 } else if (styledShorts || styledDouble) {
                     String fontAttachmentOptions = buildFontAttachmentOptions(assFontFile);
                     command = String.format("-i %s -i %s -c copy -c:s ass%s %s",
@@ -1135,8 +1149,10 @@ public class SubtitleGenerator {
                 } else if (burnSubtitles) {
 //                    command = String.format("-i %s -vf subtitles=%s:force_style='FontName=%s' -c:v mpeg4 -c:a copy %s",
 //                            inputPath, subtitlePath, fontName, outputPath);
-                     command = String.format("-i %s -vf subtitles=%s:force_style='FontName=%s' -q:v 1 -c:a copy %s",
-                                                inputPath, subtitlePath, fontName, outputPath);
+                     command = String.format("-i %s -vf \"subtitles=%s:force_style='FontName=%s'%s\" %s -c:a copy %s",
+                                                inputPath, subtitlePath, fontName,
+                                                HardSubtitleExportSettings.videoFilterSuffix(context),
+                                                HardSubtitleExportSettings.videoEncodingArguments(context), outputPath);
 //                    command = String.format(
 //                            "-i %s -vf subtitles=%s:force_style='FontName=%s' -c:v h264 -preset veryslow -c:a copy %s",
 //                            inputPath, subtitlePath, fontName, outputPath
@@ -1152,6 +1168,14 @@ public class SubtitleGenerator {
 
                 callback.onProgressUpdate(-1);
                 FFmpegSession session = FFmpegKit.execute(command);
+                if (burnSubtitles && !ReturnCode.isSuccess(session.getReturnCode())) {
+                    String retryInputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri);
+                    String fallbackFilter = (styledShorts || styledDouble)
+                            ? "ass=" + subtitlePath : "subtitles=" + subtitlePath + ":force_style='FontName=" + fontName + "'";
+                    fallbackFilter += HardSubtitleExportSettings.videoFilterSuffix(context);
+                    session = FFmpegKit.execute(String.format("-y -i %s -vf \"%s\" -c:v mpeg4 -q:v 2 -c:a copy %s",
+                            retryInputPath, fallbackFilter, outputPath));
+                }
 
                 if (ReturnCode.isSuccess(session.getReturnCode())) {
                     callback.onVideoExported(outputPath);
@@ -1198,9 +1222,13 @@ public class SubtitleGenerator {
                             effective = new ShortsSubtitleStyle(effective.getX(), effective.getY(), effective.getTextSizeSp(),
                                     effective.isUppercase(), false, true);
                         }
-                        writeAssSubtitles(rebased, output, effective, resolveAssFontName(null), candidate.getCaptionLayer());
+                        int shortsMaxWords = context.getSharedPreferences("autosub_settings", Context.MODE_PRIVATE)
+                                .getInt("shorts_max_words_per_subtitle", DEFAULT_MAX_WORDS_PER_SUBTITLE);
+                        writeAssSubtitles(rebased, output, effective, resolveAssFontName(null),
+                                candidate.getCaptionLayer(), shortsMaxWords);
                     }
                     filter += ",ass='" + escapeFilterPath(assFile.getAbsolutePath()) + "'";
+                    filter += HardSubtitleExportSettings.videoFilterSuffix(context);
                 }
 
                 String base = "(short-" + Math.max(1, candidate.getId()) + ")_" + slug(candidate.getTitle());
@@ -1212,7 +1240,10 @@ public class SubtitleGenerator {
                         "-y -ss %.3f -t %.3f -i %s -vf \"%s\" -c:a aac -b:a 192k -movflags +faststart ",
                         start, duration, inputPath, filter);
                 callback.onProgressUpdate(-1);
-                FFmpegSession session = FFmpegKit.execute(common + "-c:v libx264 -preset veryfast -crf 20 '" + output.getAbsolutePath() + "'");
+                String preferredEncoding = candidate.isBurnCaptions()
+                        ? HardSubtitleExportSettings.videoEncodingArguments(context)
+                        : "-c:v libx264 -preset veryfast -crf 20";
+                FFmpegSession session = FFmpegKit.execute(common + preferredEncoding + " '" + output.getAbsolutePath() + "'");
                 if (!ReturnCode.isSuccess(session.getReturnCode())) {
                     session = FFmpegKit.execute(common + "-c:v mpeg4 -q:v 2 '" + output.getAbsolutePath() + "'");
                 }
@@ -1228,6 +1259,295 @@ public class SubtitleGenerator {
                 if (assFile != null && assFile.exists()) assFile.delete();
             }
         });
+    }
+
+    public void exportPhraseMontage(Uri videoUri, List<ShortsCandidate> selectedMatches, String phrase,
+                                    File outputDir,
+                                    VideoExportCallback callback) {
+        executorService.execute(() -> {
+            try {
+                List<ShortsCandidate> matches = new ArrayList<>();
+                if (selectedMatches != null) {
+                    for (ShortsCandidate candidate : selectedMatches) {
+                        if (candidate != null && candidate.isSelected()
+                                && candidate.getEndMs() > candidate.getStartMs()) {
+                            matches.add(candidate);
+                        }
+                    }
+                }
+                if (matches.isEmpty()) {
+                    callback.onError("Select at least one phrase match");
+                    return;
+                }
+                if (matches.size() > 200) {
+                    callback.onError("Too many matches (" + matches.size() + "). Use a more specific phrase.");
+                    return;
+                }
+
+                File exportDir = resolveOutputDir(outputDir);
+                File output = uniqueOutputFile(exportDir,
+                        "(phrase-montage)_" + slug(phrase), "mp4");
+                String inputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri);
+                StringBuilder filters = new StringBuilder();
+                StringBuilder concatInputs = new StringBuilder();
+                for (int i = 0; i < matches.size(); i++) {
+                    ShortsCandidate match = matches.get(i);
+                    double start = match.getStartMs() / 1000d;
+                    double end = match.getEndMs() / 1000d;
+                    boolean smooth = context.getSharedPreferences("autosub_settings", Context.MODE_PRIVATE)
+                            .getBoolean("shorts_smooth_auto_framing", false);
+                    String crop = buildVerticalCropFilter(match, smooth);
+                    filters.append(String.format(Locale.US,
+                            "[0:v]trim=start=%.3f:end=%.3f,setpts=PTS-STARTPTS,%s[v%d];" +
+                                    "[0:a]atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS[a%d];",
+                            start, end, crop, i, start, end, i));
+                    concatInputs.append("[v").append(i).append("][a").append(i).append("]");
+                }
+                filters.append(concatInputs)
+                        .append("concat=n=").append(matches.size()).append(":v=1:a=1[vout][aout]");
+
+                callback.onProgressUpdate(-1);
+                String common = "-y -i " + inputPath + " -filter_complex \"" + filters +
+                        "\" -map \"[vout]\" -map \"[aout]\" -c:a aac -b:a 192k -movflags +faststart ";
+                FFmpegSession session = FFmpegKit.execute(common +
+                        "-c:v libx264 -preset veryfast -crf 20 '" + output.getAbsolutePath() + "'");
+                if (!ReturnCode.isSuccess(session.getReturnCode())) {
+                    session = FFmpegKit.execute(common +
+                            "-c:v mpeg4 -q:v 2 '" + output.getAbsolutePath() + "'");
+                }
+                if (ReturnCode.isSuccess(session.getReturnCode())) {
+                    callback.onProgressUpdate(100);
+                    callback.onVideoExported(output.getAbsolutePath());
+                } else {
+                    callback.onError("Phrase montage export failed: " + session.getLogsAsString());
+                }
+            } catch (Exception e) {
+                callback.onError(e.getMessage() == null ? "Phrase montage export failed" : e.getMessage());
+            }
+        });
+    }
+
+    public void exportCondensedVideo(Uri videoUri, List<SubtitleEntry> subtitles, boolean useVad,
+                                     boolean vertical, long rangeStartMs, long rangeEndMs,
+                                     float horizontalPosition, File outputDir, String outputLabel,
+                                     VideoExportCallback callback) {
+        exportCondensedVideo(videoUri, subtitles, useVad, vertical, rangeStartMs, rangeEndMs,
+                horizontalPosition, outputDir, outputLabel, CondensedOutputMode.VIDEO,
+                SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void exportCondensedVideo(Uri videoUri, List<SubtitleEntry> subtitles, boolean useVad,
+                                     boolean vertical, long rangeStartMs, long rangeEndMs,
+                                     float horizontalPosition, File outputDir, String outputLabel,
+                                     CondensedOutputMode outputMode, SubtitleLayerMode layerMode,
+                                     VideoExportCallback callback) {
+        executorService.execute(() -> {
+            try {
+                isCancelled = false;
+                callback.onProgressUpdate(-1);
+                List<ShortsCandidate> segments = new ArrayList<>();
+                if (useVad) {
+                    List<SpeechWindow> windows = getExportSpeechWindows(videoUri);
+                    for (SpeechWindow window : windows) {
+                        long start = samplesToMs(window.startSample);
+                        long end = samplesToMs(window.endSample);
+                        addCondensedSegment(segments, start, end, rangeStartMs, rangeEndMs);
+                    }
+                } else if (subtitles != null) {
+                    for (SubtitleEntry entry : subtitles) {
+                        if (!containsLetterOrDigit(entry.getText())) continue;
+                        addCondensedSegment(segments, parseSubtitleTime(entry.getStartTime()),
+                                parseSubtitleTime(entry.getEndTime()), rangeStartMs, rangeEndMs);
+                    }
+                }
+                segments = mergeCondensedSegments(segments, 120);
+                if (segments.isEmpty()) {
+                    callback.onError(useVad ? "VAD did not find any speech" : "No subtitle timing ranges were found");
+                    return;
+                }
+                List<SubtitleEntry> rebased = rebaseCondensedSubtitles(subtitles, segments, !useVad);
+                renderCondensedSegments(videoUri, segments, rebased, vertical, horizontalPosition,
+                        outputDir, outputLabel, outputMode, layerMode, callback);
+            } catch (Exception error) {
+                callback.onError(error.getMessage() == null ? "Speech-only export failed" : error.getMessage());
+            }
+        });
+    }
+
+    static boolean containsLetterOrDigit(String text) {
+        if (text == null || text.isEmpty()) return false;
+        return text.codePoints().anyMatch(Character::isLetterOrDigit);
+    }
+
+    private List<SpeechWindow> getExportSpeechWindows(Uri videoUri) throws IOException {
+        String model = normalizeVadModel(whisperVadModel);
+        String aggressiveness = normalizeVadAggressiveness(whisperVadAggressiveness);
+        String key = String.valueOf(videoUri) + "|" + model + "|" + aggressiveness;
+        if (key.equals(cachedExportVadKey) && !cachedExportSpeechWindows.isEmpty()) {
+            return new ArrayList<>(cachedExportSpeechWindows);
+        }
+        File wav = extractAudioFromVideo(videoUri);
+        long totalSamples = Math.max(0, (wav.length() - WAV_HEADER_BYTES) / 2);
+        List<SpeechWindow> windows = detectSpeechWindows(wav, totalSamples, model, aggressiveness);
+        cachedExportVadKey = key;
+        cachedExportSpeechWindows = new ArrayList<>(windows);
+        return windows;
+    }
+
+    private void addCondensedSegment(List<ShortsCandidate> segments, long start, long end,
+                                     long rangeStartMs, long rangeEndMs) {
+        long boundedStart = Math.max(start, Math.max(0, rangeStartMs));
+        long maximumEnd = rangeEndMs > rangeStartMs ? rangeEndMs : Long.MAX_VALUE;
+        long boundedEnd = Math.min(end, maximumEnd);
+        if (boundedEnd > boundedStart) {
+            segments.add(new ShortsCandidate(0, 0, boundedStart, boundedEnd,
+                    "Speech", "", "", 100));
+        }
+    }
+
+    private List<ShortsCandidate> mergeCondensedSegments(List<ShortsCandidate> source, long gapMs) {
+        source.sort((a, b) -> Long.compare(a.getStartMs(), b.getStartMs()));
+        List<ShortsCandidate> merged = new ArrayList<>();
+        for (ShortsCandidate segment : source) {
+            if (merged.isEmpty()) {
+                merged.add(segment);
+                continue;
+            }
+            ShortsCandidate previous = merged.get(merged.size() - 1);
+            if (segment.getStartMs() <= previous.getEndMs() + gapMs) {
+                previous.setEndMs(Math.max(previous.getEndMs(), segment.getEndMs()));
+            } else {
+                merged.add(segment);
+            }
+        }
+        return merged;
+    }
+
+    List<SubtitleEntry> rebaseCondensedSubtitles(List<SubtitleEntry> source,
+                                                  List<ShortsCandidate> segments,
+                                                  boolean requireSpokenText) {
+        List<SubtitleEntry> result = new ArrayList<>();
+        if (source == null || segments == null) return result;
+        long outputOffset = 0;
+        for (ShortsCandidate segment : segments) {
+            long segmentStart = segment.getStartMs();
+            long segmentEnd = segment.getEndMs();
+            for (SubtitleEntry entry : source) {
+                if (requireSpokenText && !containsLetterOrDigit(entry.getText())) continue;
+                long start = parseSubtitleTime(entry.getStartTime());
+                long end = parseSubtitleTime(entry.getEndTime());
+                if (end <= segmentStart || start >= segmentEnd) continue;
+                long localStart = outputOffset + Math.max(start, segmentStart) - segmentStart;
+                long localEnd = outputOffset + Math.min(end, segmentEnd) - segmentStart;
+                if (localEnd <= localStart) continue;
+                List<WordTiming> words = new ArrayList<>();
+                for (WordTiming word : entry.getWords()) {
+                    if (word.getEndMs() <= segmentStart || word.getStartMs() >= segmentEnd) continue;
+                    words.add(new WordTiming(word.getWord(),
+                            outputOffset + Math.max(word.getStartMs(), segmentStart) - segmentStart,
+                            outputOffset + Math.min(word.getEndMs(), segmentEnd) - segmentStart,
+                            word.getConfidence()));
+                }
+                SubtitleEntry copy = new SubtitleEntry(result.size() + 1, formatTime(localStart),
+                        formatTime(localEnd), entry.getText(), words);
+                copy.setTranslationText(entry.getTranslationText());
+                result.add(copy);
+            }
+            outputOffset += segmentEnd - segmentStart;
+        }
+        return result;
+    }
+
+    private void renderCondensedSegments(Uri videoUri, List<ShortsCandidate> segments,
+                                         List<SubtitleEntry> rebasedSubtitles, boolean vertical,
+                                         float horizontalPosition, File outputDir, String outputLabel,
+                                         CondensedOutputMode outputMode, SubtitleLayerMode layerMode,
+                                         VideoExportCallback callback) throws IOException {
+        if (segments.size() > 500) throw new IOException("Too many speech segments to export");
+        File exportDir = resolveOutputDir(outputDir);
+        String base = "(" + slug(outputLabel) + ")_speech-cut";
+        List<SubtitleEntry> projected = projectSubtitleEntries(rebasedSubtitles,
+                layerMode == null ? SubtitleLayerMode.ORIGINAL : layerMode, false);
+        if (outputMode != CondensedOutputMode.VIDEO && projected.isEmpty()) {
+            throw new IOException("No subtitles overlap the retained speech");
+        }
+        if (outputMode == CondensedOutputMode.SRT || outputMode == CondensedOutputMode.VTT) {
+            String extension = outputMode == CondensedOutputMode.SRT ? "srt" : "vtt";
+            File output = uniqueOutputFile(exportDir, base + "_retimed", extension);
+            try (FileOutputStream stream = new FileOutputStream(output)) {
+                if (outputMode == CondensedOutputMode.SRT) writeSrtSubtitles(projected, stream);
+                else writeVttSubtitles(projected, stream);
+            }
+            callback.onProgressUpdate(100);
+            callback.onVideoExported(output.getAbsolutePath());
+            return;
+        }
+        File output = uniqueOutputFile(exportDir, base, "mp4");
+        File plainOutput = outputMode == CondensedOutputMode.VIDEO
+                ? output : File.createTempFile("condensed_", ".mp4", context.getCacheDir());
+        String inputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri);
+        StringBuilder filters = new StringBuilder();
+        StringBuilder concatInputs = new StringBuilder();
+        for (int i = 0; i < segments.size(); i++) {
+            ShortsCandidate segment = segments.get(i);
+            double start = segment.getStartMs() / 1000d;
+            double end = segment.getEndMs() / 1000d;
+            String videoTail = vertical
+                    ? String.format(Locale.US, ",scale=1080:1920:force_original_aspect_ratio=increase," +
+                            "crop=1080:1920:(iw-ow)*%.4f:(ih-oh)/2,setsar=1",
+                            Math.max(0f, Math.min(1f, horizontalPosition)))
+                    : "";
+            filters.append(String.format(Locale.US,
+                    "[0:v]trim=start=%.3f:end=%.3f,setpts=PTS-STARTPTS%s[v%d];" +
+                            "[0:a]atrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS[a%d];",
+                    start, end, videoTail, i, start, end, i));
+            concatInputs.append("[v").append(i).append("][a").append(i).append("]");
+        }
+        filters.append(concatInputs).append("concat=n=").append(segments.size())
+                .append(":v=1:a=1[vout][aout]");
+        String common = "-y -i " + inputPath + " -filter_complex \"" + filters +
+                "\" -map \"[vout]\" -map \"[aout]\" -c:a aac -b:a 192k -movflags +faststart ";
+        FFmpegSession session = FFmpegKit.execute(common +
+                "-c:v libx264 -preset veryfast -crf 20 '" + plainOutput.getAbsolutePath() + "'");
+        if (!ReturnCode.isSuccess(session.getReturnCode())) {
+            session = FFmpegKit.execute(common +
+                    "-c:v mpeg4 -q:v 2 '" + plainOutput.getAbsolutePath() + "'");
+        }
+        if (!ReturnCode.isSuccess(session.getReturnCode())) {
+            callback.onError("Speech-only export failed: " + session.getLogsAsString());
+            return;
+        }
+        if (outputMode != CondensedOutputMode.VIDEO) {
+            File subtitleFile = File.createTempFile("condensed_", ".srt", context.getCacheDir());
+            try (FileOutputStream stream = new FileOutputStream(subtitleFile)) {
+                writeSrtSubtitles(projected, stream);
+            }
+            String videoInput = "'" + plainOutput.getAbsolutePath() + "'";
+            if (outputMode == CondensedOutputMode.SOFT_SUBTITLE_VIDEO) {
+                session = FFmpegKit.execute("-y -i " + videoInput + " -i '" + subtitleFile.getAbsolutePath() +
+                        "' -map 0:v -map 0:a? -map 1:0 -c:v copy -c:a copy -c:s mov_text " +
+                        "-metadata:s:s:0 language=und -movflags +faststart '" + output.getAbsolutePath() + "'");
+            } else {
+                session = FFmpegKit.execute("-y -i " + videoInput + " -vf \"subtitles='" +
+                        escapeFilterPath(subtitleFile.getAbsolutePath()) + "'" +
+                        HardSubtitleExportSettings.videoFilterSuffix(context) + "\" " +
+                        HardSubtitleExportSettings.videoEncodingArguments(context) +
+                        " -c:a copy -movflags +faststart '" + output.getAbsolutePath() + "'");
+                if (!ReturnCode.isSuccess(session.getReturnCode())) {
+                    session = FFmpegKit.execute("-y -i " + videoInput + " -vf \"subtitles='" +
+                            escapeFilterPath(subtitleFile.getAbsolutePath()) + "'\" -c:v mpeg4 " +
+                            "-q:v 2 -c:a copy '" + output.getAbsolutePath() + "'");
+                }
+            }
+            plainOutput.delete();
+            subtitleFile.delete();
+            if (!ReturnCode.isSuccess(session.getReturnCode())) {
+                callback.onError("Captioned speech-only export failed: " + session.getLogsAsString());
+                return;
+            }
+        }
+        callback.onProgressUpdate(100);
+        callback.onVideoExported(output.getAbsolutePath());
     }
 
     static String buildVerticalCropFilter(float cropPosition) {
@@ -1328,6 +1648,12 @@ public class SubtitleGenerator {
 
     private void writeAssSubtitles(List<SubtitleEntry> subtitles, FileOutputStream fos,
                                    ShortsSubtitleStyle style, String fontName, SubtitleLayerMode layerMode) throws IOException {
+        writeAssSubtitles(subtitles, fos, style, fontName, layerMode, maxWordsPerSubtitle);
+    }
+
+    private void writeAssSubtitles(List<SubtitleEntry> subtitles, FileOutputStream fos,
+                                   ShortsSubtitleStyle style, String fontName, SubtitleLayerMode layerMode,
+                                   int wordsPerSubtitle) throws IOException {
         try (Writer writer = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
             int playResX = style.isVerticalVideo() ? 1080 : 1920;
             int playResY = style.isVerticalVideo() ? 1920 : 1080;
@@ -1360,7 +1686,7 @@ public class SubtitleGenerator {
                 }
                 if (!allWords.isEmpty()) {
                     List<SubtitleEntry> rechunked = new ArrayList<>();
-                    addTimedSubtitleChunks(rechunked, allWords);
+                    addTimedSubtitleChunks(rechunked, allWords, wordsPerSubtitle);
                     if (!rechunked.isEmpty()) {
                         finalSubtitles = rechunked;
                     }
@@ -1863,7 +2189,7 @@ public class SubtitleGenerator {
         long[] lastPartialUpdateMs = {0};
         long[] lastProgressUpdateMs = {0};
         int[] lastDispatchedProgress = {-1};
-        int nativeMaxSegmentLength = keepSentencesTogether ? 0 : maxSubtitleLength;
+        int nativeMaxSegmentLength = 0;
         long totalSamples = Math.max(0, (audioFile.length() - WAV_HEADER_BYTES) / 2);
         int maxChunkSamples = WHISPER_SAMPLE_RATE * WHISPER_CHUNK_SECONDS;
         int maxVadBatchSamples = WHISPER_SAMPLE_RATE * WHISPER_VAD_BATCH_SECONDS;
@@ -2394,6 +2720,7 @@ public class SubtitleGenerator {
 
                 synchronized (subtitles) {
                     if (shouldDispatchPartialUpdate(lastPartialUpdateMs)) {
+                        normalizeSubtitleTimings(subtitles);
                         callback.onPartialSubtitlesGenerated(new ArrayList<>(subtitles));
                     }
                 }
@@ -2613,6 +2940,13 @@ public class SubtitleGenerator {
     }
 
     private void addTimedSubtitleChunks(List<SubtitleEntry> subtitles, List<WordTiming> words) {
+        addTimedSubtitleChunks(subtitles, words, maxWordsPerSubtitle);
+    }
+
+    private void addTimedSubtitleChunks(List<SubtitleEntry> subtitles, List<WordTiming> words,
+                                        int wordsPerSubtitle) {
+        int boundedWordsPerSubtitle = Math.max(MIN_WORDS_PER_SUBTITLE,
+                Math.min(MAX_WORDS_PER_SUBTITLE_LIMIT, wordsPerSubtitle));
         List<WordTiming> currentWords = new ArrayList<>();
         StringBuilder currentText = new StringBuilder();
 
@@ -2622,16 +2956,14 @@ public class SubtitleGenerator {
                 continue;
             }
 
-            int nextLength = currentText.length() == 0
-                    ? wordText.length()
-                    : currentText.length() + 1 + wordText.length();
             boolean timeGapBoundary = !currentWords.isEmpty()
                     && word.getStartMs() - currentWords.get(currentWords.size() - 1).getEndMs()
                     > WHISPER_WORD_GAP_SPLIT_MS;
-            boolean sentenceBoundary = currentText.length() > 0 && endsSentence(currentText.toString());
-            boolean wordCountBoundary = currentWords.size() >= maxWordsPerSubtitle;
-            boolean lengthBoundary = !keepSentencesTogether && nextLength > maxSubtitleLength;
-            if (!currentWords.isEmpty() && (timeGapBoundary || lengthBoundary || wordCountBoundary || sentenceBoundary)) {
+            boolean sentenceBoundary = keepSentencesTogether
+                    && currentText.length() > 0
+                    && endsSentence(currentText.toString());
+            boolean wordCountBoundary = currentWords.size() >= boundedWordsPerSubtitle;
+            if (!currentWords.isEmpty() && (timeGapBoundary || wordCountBoundary || sentenceBoundary)) {
                 addSubtitleChunk(subtitles, currentWords, currentText.toString());
                 currentWords = new ArrayList<>();
                 currentText = new StringBuilder();
@@ -2675,6 +3007,74 @@ public class SubtitleGenerator {
                 formatTime(endMs),
                 text.trim(),
                 new ArrayList<>(words)));
+    }
+
+    /**
+     * Shortens a cue when its end time extends past the following cue's start time.
+     * Recognition engines can occasionally return slightly overlapping timestamps;
+     * keeping the later cue's start time and trimming the earlier cue avoids rendering
+     * both subtitle items at once.
+     */
+    static void normalizeSubtitleTimings(List<SubtitleEntry> subtitles) {
+        if (subtitles == null || subtitles.size() < 2) {
+            return;
+        }
+
+        for (int i = 1; i < subtitles.size(); i++) {
+            SubtitleEntry previous = subtitles.get(i - 1);
+            SubtitleEntry current = subtitles.get(i);
+            if (previous == null || current == null) {
+                continue;
+            }
+
+            Long previousStartMs = tryParseSubtitleTime(previous.getStartTime());
+            Long previousEndMs = tryParseSubtitleTime(previous.getEndTime());
+            Long currentStartMs = tryParseSubtitleTime(current.getStartTime());
+            if (previousStartMs == null || previousEndMs == null || currentStartMs == null) {
+                continue;
+            }
+
+            // Do not create a zero/negative-duration cue when timestamps arrive out of order.
+            if (previousEndMs > currentStartMs && currentStartMs > previousStartMs) {
+                previous.setEndTime(formatTime(currentStartMs));
+                trimWordTimingsAt(previous, currentStartMs);
+            }
+        }
+    }
+
+    private static Long tryParseSubtitleTime(String timeString) {
+        if (timeString == null) {
+            return null;
+        }
+        try {
+            String[] parts = timeString.trim().split("[:,.]");
+            if (parts.length != 4) {
+                return null;
+            }
+            return Long.parseLong(parts[0]) * 3600000L
+                    + Long.parseLong(parts[1]) * 60000L
+                    + Long.parseLong(parts[2]) * 1000L
+                    + Long.parseLong(parts[3]);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static void trimWordTimingsAt(SubtitleEntry entry, long endMs) {
+        List<WordTiming> words = entry.getWords();
+        if (words == null || words.isEmpty()) {
+            return;
+        }
+
+        List<WordTiming> trimmedWords = new ArrayList<>();
+        for (WordTiming word : words) {
+            long trimmedEndMs = Math.min(word.getEndMs(), endMs);
+            if (word.getStartMs() < trimmedEndMs) {
+                trimmedWords.add(new WordTiming(word.getWord(), word.getStartMs(), trimmedEndMs,
+                        word.getConfidence()));
+            }
+        }
+        entry.setWords(trimmedWords);
     }
 
     private float[] readWavToFloatArray(File file) throws IOException {

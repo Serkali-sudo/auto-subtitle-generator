@@ -14,13 +14,13 @@ import java.util.List;
 
 public class ShortsProjectStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "autosub_shorts.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 4;
     private static final Gson GSON = new Gson();
 
     public ShortsProjectStore(Context context) { super(context, DB_NAME, null, DB_VERSION); }
 
     @Override public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE shorts_projects (id INTEGER PRIMARY KEY AUTOINCREMENT, queue_item_id INTEGER NOT NULL UNIQUE, focus_prompt TEXT, desired_count INTEGER, min_duration INTEGER, max_duration INTEGER, updated_at INTEGER NOT NULL)");
+        db.execSQL("CREATE TABLE shorts_projects (id INTEGER PRIMARY KEY AUTOINCREMENT, queue_item_id INTEGER NOT NULL UNIQUE, focus_prompt TEXT, desired_count INTEGER, min_duration INTEGER, max_duration INTEGER, updated_at INTEGER NOT NULL, project_mode TEXT NOT NULL DEFAULT 'AI_HIGHLIGHTS', phrase TEXT, keep_whole_subtitle INTEGER NOT NULL DEFAULT 0, remove_silence INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE TABLE shorts_candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, start_subtitle_id INTEGER, end_subtitle_id INTEGER, start_ms INTEGER, end_ms INTEGER, title TEXT, hook TEXT, reason TEXT, score INTEGER, selected INTEGER, crop_position REAL, crop_keyframes TEXT, burn_captions INTEGER, caption_layer TEXT, render_state TEXT, output_path TEXT, error_message TEXT, FOREIGN KEY(project_id) REFERENCES shorts_projects(id) ON DELETE CASCADE)");
         db.execSQL("CREATE INDEX idx_shorts_candidates_project ON shorts_candidates(project_id)");
     }
@@ -28,6 +28,12 @@ public class ShortsProjectStore extends SQLiteOpenHelper {
     @Override public void onConfigure(SQLiteDatabase db) { super.onConfigure(db); db.setForeignKeyConstraintsEnabled(true); }
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         if (oldVersion < 2) db.execSQL("ALTER TABLE shorts_candidates ADD COLUMN crop_keyframes TEXT");
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE shorts_projects ADD COLUMN project_mode TEXT NOT NULL DEFAULT 'AI_HIGHLIGHTS'");
+            db.execSQL("ALTER TABLE shorts_projects ADD COLUMN phrase TEXT");
+            db.execSQL("ALTER TABLE shorts_projects ADD COLUMN keep_whole_subtitle INTEGER NOT NULL DEFAULT 0");
+        }
+        if (oldVersion < 4) db.execSQL("ALTER TABLE shorts_projects ADD COLUMN remove_silence INTEGER NOT NULL DEFAULT 0");
     }
 
     public synchronized long save(ShortsProject project) {
@@ -40,6 +46,10 @@ public class ShortsProjectStore extends SQLiteOpenHelper {
             values.put("desired_count", project.getDesiredCount());
             values.put("min_duration", project.getMinDurationSeconds());
             values.put("max_duration", project.getMaxDurationSeconds());
+            values.put("project_mode", project.getMode().name());
+            values.put("phrase", project.getPhrase());
+            values.put("keep_whole_subtitle", project.isKeepWholeSubtitle() ? 1 : 0);
+            values.put("remove_silence", project.isRemoveSilence() ? 1 : 0);
             values.put("updated_at", System.currentTimeMillis());
             long id = db.insertWithOnConflict("shorts_projects", null, values, SQLiteDatabase.CONFLICT_REPLACE);
             project.setId(id);
@@ -66,6 +76,15 @@ public class ShortsProjectStore extends SQLiteOpenHelper {
                     c.getInt(c.getColumnIndexOrThrow("max_duration")));
             project.setId(c.getLong(c.getColumnIndexOrThrow("id")));
             project.setUpdatedAt(c.getLong(c.getColumnIndexOrThrow("updated_at")));
+            try {
+                project.setMode(ShortsProject.Mode.valueOf(c.getString(c.getColumnIndexOrThrow("project_mode"))));
+            } catch (Exception ignored) { }
+            int phraseColumn = c.getColumnIndex("phrase");
+            if (phraseColumn >= 0) project.setPhrase(c.getString(phraseColumn));
+            int wholeColumn = c.getColumnIndex("keep_whole_subtitle");
+            if (wholeColumn >= 0) project.setKeepWholeSubtitle(c.getInt(wholeColumn) == 1);
+            int removeSilenceColumn = c.getColumnIndex("remove_silence");
+            if (removeSilenceColumn >= 0) project.setRemoveSilence(c.getInt(removeSilenceColumn) == 1);
             project.setCandidates(loadCandidates(project.getId()));
             return project;
         }

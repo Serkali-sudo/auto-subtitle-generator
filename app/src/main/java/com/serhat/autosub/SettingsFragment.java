@@ -319,8 +319,8 @@ public class SettingsFragment extends Fragment {
             viewModel.setShortsCaptionSize(value);
         });
 
-        binding.subtitleLengthSlider.addOnChangeListener((slider, value, fromUser) -> {
-            viewModel.setSubtitleMaxLength(Math.round(value));
+        binding.subtitleWordsSlider.addOnChangeListener((slider, value, fromUser) -> {
+            viewModel.setSubtitleMaxWords(Math.round(value));
         });
 
         binding.keepSentencesTogetherSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -457,9 +457,9 @@ public class SettingsFragment extends Fragment {
             binding.shortsSizeSlider.setValue(size);
         });
 
-        viewModel.getSubtitleMaxLength().observe(getViewLifecycleOwner(), maxLength -> {
-            binding.subtitleLengthSlider.setValue(maxLength);
-            binding.subtitleLengthValueTV.setText(maxLength + " chars");
+        viewModel.getSubtitleMaxWords().observe(getViewLifecycleOwner(), maxWords -> {
+            binding.subtitleWordsSlider.setValue(maxWords);
+            binding.subtitleWordsValueTV.setText(maxWords + " words");
         });
 
         viewModel.getKeepSentencesTogether().observe(getViewLifecycleOwner(), keepTogether -> {

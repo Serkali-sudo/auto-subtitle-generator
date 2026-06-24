@@ -36,6 +36,8 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         void onPreview(QueueItem item);
         void onTranslate(QueueItem item);
         void onCreateShorts(QueueItem item);
+        void onTalkOnly(QueueItem item);
+        void onRemoveSilence(QueueItem item);
         default void onSelectionChanged() {}
         default void onLongPress(QueueItem item) {}
     }
@@ -149,7 +151,8 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
     class QueueViewHolder extends RecyclerView.ViewHolder {
         TextView titleTV, statusTV, outputTV;
         LinearProgressIndicator progressIndicator;
-        MaterialButton retryBT, removeBT, exportVideoBT, exportSubtitleBT, shareBT, playBT, createShortsBT;
+        MaterialButton retryBT, removeBT, exportVideoBT, exportSubtitleBT, shareBT, playBT,
+                createShortsBT, talkOnlyBT, silenceRemovedBT;
         android.widget.ImageView queueThumbIV;
         android.widget.ImageButton queueEditBT, queueTranslateBT;
         android.widget.CheckBox queueSelectCB;
@@ -168,6 +171,8 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             shareBT = itemView.findViewById(R.id.queueShareBT);
             playBT = itemView.findViewById(R.id.queuePlayBT);
             createShortsBT = itemView.findViewById(R.id.queueCreateShortsBT);
+            talkOnlyBT = itemView.findViewById(R.id.queueTalkOnlyBT);
+            silenceRemovedBT = itemView.findViewById(R.id.queueSilenceRemovedBT);
             queueThumbIV = itemView.findViewById(R.id.queueThumbIV);
             queueEditBT = itemView.findViewById(R.id.queueEditBT);
             queueTranslateBT = itemView.findViewById(R.id.queueTranslateBT);
@@ -176,9 +181,13 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
 
         void bind(QueueItem item) {
             titleTV.setText(item.getDisplayName());
-            statusTV.setText(item.getStatus().name().toLowerCase(Locale.getDefault()) + statusSuffix(item));
+            String statusLabel = item.getStatus() == QueueItem.Status.ANALYZING_SHORTS
+                    ? "finding shorts"
+                    : item.getStatus().name().toLowerCase(Locale.getDefault());
+            statusTV.setText(statusLabel + statusSuffix(item));
             if (item.getStatus() == QueueItem.Status.EXPORTING
-                    || item.getStatus() == QueueItem.Status.TRANSLATING) {
+                    || item.getStatus() == QueueItem.Status.TRANSLATING
+                    || item.getStatus() == QueueItem.Status.ANALYZING_SHORTS) {
                 outputTV.setText(item.getMessage());
             } else {
                 outputTV.setText(item.getOutputPath().isEmpty() ? item.getMessage() : item.getOutputPath());
@@ -190,7 +199,8 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
 
             boolean active = item.getStatus() == QueueItem.Status.PROCESSING
                     || item.getStatus() == QueueItem.Status.EXPORTING
-                    || item.getStatus() == QueueItem.Status.TRANSLATING;
+                    || item.getStatus() == QueueItem.Status.TRANSLATING
+                    || item.getStatus() == QueueItem.Status.ANALYZING_SHORTS;
             progressIndicator.setVisibility(active ? View.VISIBLE : View.GONE);
             if (active && item.getProgress() < 0) {
                 progressIndicator.setIndeterminate(true);
@@ -206,6 +216,8 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             exportSubtitleBT.setVisibility(completed && !selectionMode ? View.VISIBLE : View.GONE);
             shareBT.setVisibility(completed && !selectionMode ? View.VISIBLE : View.GONE);
             createShortsBT.setVisibility(completed && !selectionMode && !item.getSubtitles().isEmpty() ? View.VISIBLE : View.GONE);
+            talkOnlyBT.setVisibility(completed && !selectionMode && !item.getSubtitles().isEmpty() ? View.VISIBLE : View.GONE);
+            silenceRemovedBT.setVisibility(completed && !selectionMode && !item.getSubtitles().isEmpty() ? View.VISIBLE : View.GONE);
             
             boolean hasVideo = !item.getSoftVideoPath().isEmpty() || !item.getHardVideoPath().isEmpty();
             playBT.setVisibility(completed && hasVideo && !selectionMode ? View.VISIBLE : View.GONE);
@@ -242,6 +254,12 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             createShortsBT.setOnClickListener(v -> {
                 if (listener != null) listener.onCreateShorts(item);
             });
+            talkOnlyBT.setOnClickListener(v -> {
+                if (listener != null) listener.onTalkOnly(item);
+            });
+            silenceRemovedBT.setOnClickListener(v -> {
+                if (listener != null) listener.onRemoveSilence(item);
+            });
             
             // Edit button and item card click
             queueEditBT.setVisibility(selectionMode ? View.GONE : View.VISIBLE);
@@ -274,7 +292,8 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
         private String statusSuffix(QueueItem item) {
             if (item.getStatus() == QueueItem.Status.PROCESSING
                     || item.getStatus() == QueueItem.Status.EXPORTING
-                    || item.getStatus() == QueueItem.Status.TRANSLATING) {
+                    || item.getStatus() == QueueItem.Status.TRANSLATING
+                    || item.getStatus() == QueueItem.Status.ANALYZING_SHORTS) {
                 if (item.getProgress() < 0) {
                     String message = item.getMessage();
                     if (message != null && !message.trim().isEmpty()) {

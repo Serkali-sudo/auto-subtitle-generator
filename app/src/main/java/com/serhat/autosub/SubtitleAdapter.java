@@ -63,10 +63,9 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
         if (subtitles == null) {
             subtitles = new ArrayList<>();
         }
-        int oldHighlightedPosition = highlightedPosition;
         int oldSize = rowStates.size();
-        highlightedPosition = -1;
         int submittedSize = subtitles.size();
+        if (highlightedPosition >= submittedSize) highlightedPosition = -1;
         selectedPositions.removeIf(position -> position < 0 || position >= submittedSize);
 
         List<SubtitleRowState> newStates = buildRowStates(subtitles);
@@ -88,10 +87,6 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
                 if (!newStates.get(i).equals(rowStates.get(i))) {
                     changedPositions.add(i);
                 }
-            }
-            if (oldHighlightedPosition >= 0 && oldHighlightedPosition < compareCount
-                    && !changedPositions.contains(oldHighlightedPosition)) {
-                changedPositions.add(oldHighlightedPosition);
             }
         }
 
@@ -115,6 +110,7 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
     }
 
     public void setHighlightedPosition(int position) {
+        if (highlightedPosition == position) return;
         int oldHighlightedPosition = highlightedPosition;
         highlightedPosition = position;
         if (oldHighlightedPosition != -1) {
@@ -322,8 +318,7 @@ public class SubtitleAdapter extends RecyclerView.Adapter<SubtitleAdapter.Subtit
 
     private boolean sameIdentity(SubtitleRowState first, SubtitleRowState second) {
         return first.number == second.number
-                && Objects.equals(first.startTime, second.startTime)
-                && Objects.equals(first.endTime, second.endTime);
+                && Objects.equals(first.startTime, second.startTime);
     }
 
     private static class SubtitleRowState {

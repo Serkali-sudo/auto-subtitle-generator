@@ -11,6 +11,7 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 public class ShortsMediaTest {
+
     @Test public void cropFilterClampsAndProducesVerticalCanvas() {
         String left = SubtitleGenerator.buildVerticalCropFilter(-5f);
         String right = SubtitleGenerator.buildVerticalCropFilter(5f);

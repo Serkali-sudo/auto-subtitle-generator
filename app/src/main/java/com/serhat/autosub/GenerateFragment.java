@@ -125,6 +125,16 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
             }
 
             @Override
+            public void onTalkOnly(QueueItem item) {
+                exportCondensedVideo(item, false);
+            }
+
+            @Override
+            public void onRemoveSilence(QueueItem item) {
+                exportCondensedVideo(item, true);
+            }
+
+            @Override
             public void onSelectionChanged() {
                 updateActionModeTitle();
             }
@@ -140,6 +150,20 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
     }
 
     private void beginCreateShorts(QueueItem item) {
+        AppOptionDialog.show(requireContext(), "Create Shorts",
+                "Choose how AutoSub should find the moments for this video.",
+                new AppOptionDialog.Option[]{
+                        new AppOptionDialog.Option("AI highlights",
+                                "Use Gemma to find complete, compelling clip ranges."),
+                        new AppOptionDialog.Option("Phrase montage",
+                                "Join every occurrence of a word or phrase. No AI model required.")
+                }, which -> {
+                    if (which == 0) beginAiCreateShorts(item);
+                    else showPhraseMontageDialog(item);
+                });
+    }
+
+    private void beginAiCreateShorts(QueueItem item) {
         if (!viewModel.isShortsAiSupported()) {
             new MaterialAlertDialogBuilder(requireContext())
                     .setTitle("Android 12 required")
@@ -152,13 +176,15 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
             new MaterialAlertDialogBuilder(requireContext())
                     .setTitle("Download Gemma 4 E2B")
                     .setMessage("The local Shorts editor is about 2.6 GB. Download it from Models before analyzing this transcript.")
-                    .setPositiveButton("Open Models", (dialog, which) -> viewModel.setActiveNavigationTab(R.id.nav_models))
+                    .setPositiveButton("Open Models", (dialog, which) -> viewModel.openModelsForGemma())
                     .setNegativeButton("Cancel", null)
                     .show();
             return;
         }
         Runnable continueAction = () -> viewModel.loadShortsProject(item, existing -> {
-            if (existing == null || existing.getCandidates().isEmpty()) showShortsAnalysisDialog(item);
+            if (existing == null || existing.isPhraseMontage() || existing.getCandidates().isEmpty()) {
+                showShortsAnalysisDialog(item);
+            }
             else AppOptionDialog.show(requireContext(), "Shorts project found",
                     "Review the saved candidates or run Gemma again with new instructions.",
                     new AppOptionDialog.Option[]{
@@ -178,6 +204,37 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                     .setNegativeButton("Cancel", null)
                     .show();
         } else continueAction.run();
+    }
+
+    private void showPhraseMontageDialog(QueueItem item) {
+        int padding = Math.round(20 * getResources().getDisplayMetrics().density);
+        android.widget.LinearLayout layout = new android.widget.LinearLayout(requireContext());
+        layout.setOrientation(android.widget.LinearLayout.VERTICAL);
+        layout.setPadding(padding, 0, padding, 0);
+
+        android.widget.EditText phraseInput = new android.widget.EditText(requireContext());
+        phraseInput.setHint("Word or phrase");
+        phraseInput.setSingleLine(true);
+        layout.addView(phraseInput);
+
+        android.widget.CheckBox keepWholeSubtitle = new android.widget.CheckBox(requireContext());
+        keepWholeSubtitle.setText("Keep the whole subtitle cue for each match");
+        layout.addView(keepWholeSubtitle);
+
+        new MaterialAlertDialogBuilder(requireContext())
+                .setTitle("Create phrase montage")
+                .setMessage("AutoSub will find every matching word sequence, extract those moments in timeline order, and join them into one video.")
+                .setView(layout)
+                .setPositiveButton("Create", (dialog, which) -> {
+                    String phrase = phraseInput.getText().toString().trim();
+                    if (phrase.isEmpty()) {
+                        Toast.makeText(requireContext(), "Enter a word or phrase", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    viewModel.preparePhraseMontage(item, phrase, keepWholeSubtitle.isChecked());
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void showShortsAnalysisDialog(QueueItem item) {
@@ -349,10 +406,56 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                     if (!burnSubtitles && shouldAskSoftSubtitleContainer(item)) {
                         chooseSubtitleLayerMode(item, layerMode -> chooseQueueSoftExportFormat(item, layerMode));
                     } else {
-                        chooseSubtitleLayerMode(item, layerMode ->
+                        Runnable proceed = () -> chooseSubtitleLayerMode(item, layerMode ->
                                 exportQueueVideo(item, burnSubtitles, fontName, false, layerMode));
+                        if (burnSubtitles) HardSubtitleExportSettings.show(this, item.getVideoUri(), proceed::run);
+                        else proceed.run();
                     }
                 });
+    }
+
+    private void exportCondensedVideo(QueueItem item, boolean useVad) {
+        AppOptionDialog.show(requireContext(), useVad ? "Export without silence" : "Export talk only",
+                "Subtitles are retimed to match the joined video.",
+                new AppOptionDialog.Option[]{
+                        new AppOptionDialog.Option("Video only", "Export the joined video without subtitles."),
+                        new AppOptionDialog.Option("Soft subtitles", "Add a selectable, correctly retimed subtitle track."),
+                        new AppOptionDialog.Option("Hard subtitles", "Burn correctly retimed subtitles into the video."),
+                        new AppOptionDialog.Option("SRT subtitles", "Export only a correctly retimed SRT file."),
+                        new AppOptionDialog.Option("VTT subtitles", "Export only a correctly retimed VTT file.")
+                }, which -> {
+                    SubtitleGenerator.CondensedOutputMode mode = SubtitleGenerator.CondensedOutputMode.values()[which];
+                    if (mode == SubtitleGenerator.CondensedOutputMode.VIDEO) {
+                        executeCondensedExport(item, useVad, mode, SubtitleGenerator.SubtitleLayerMode.ORIGINAL);
+                    } else {
+                        Runnable proceed = () -> chooseSubtitleLayerMode(item,
+                                layer -> executeCondensedExport(item, useVad, mode, layer));
+                        if (mode == SubtitleGenerator.CondensedOutputMode.HARD_SUBTITLE_VIDEO) {
+                            HardSubtitleExportSettings.show(this, item.getVideoUri(), proceed::run);
+                        } else proceed.run();
+                    }
+                });
+    }
+
+    private void executeCondensedExport(QueueItem item, boolean useVad,
+                                        SubtitleGenerator.CondensedOutputMode mode,
+                                        SubtitleGenerator.SubtitleLayerMode layerMode) {
+        ExportFolderDialog.show(this, useVad ? "Export without silence" : "Export talk only",
+                outputDir -> viewModel.exportCondensedQueueItem(item, useVad, outputDir, mode, layerMode,
+                        new SubtitleGenerator.VideoExportCallback() {
+                            @Override public void onVideoExported(String filePath) {
+                                boolean video = mode != SubtitleGenerator.CondensedOutputMode.SRT
+                                        && mode != SubtitleGenerator.CondensedOutputMode.VTT;
+                                ExportFileActions.showExportCompleteDialog(
+                                        GenerateFragment.this, viewModel, filePath, video);
+                            }
+
+                            @Override public void onError(String errorMessage) {
+                                if (isAdded()) Toast.makeText(requireContext(), errorMessage, Toast.LENGTH_LONG).show();
+                            }
+
+                            @Override public void onProgressUpdate(int progress) { }
+                        }));
     }
 
     private void translateQueueItem(QueueItem item) {
@@ -618,7 +721,7 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                     } else {
                         boolean burnSubtitles = (which == 3);
                         String fontName = burnSubtitles ? "RobotoRegular" : null;
-                        ExportFolderDialog.show(this, "Export batch to folder", outputDir -> {
+                        Runnable proceed = () -> ExportFolderDialog.show(this, "Export batch to folder", outputDir -> {
                             Toast.makeText(requireContext(), "Starting batch video export...", Toast.LENGTH_SHORT).show();
                             viewModel.batchExportVideos(burnSubtitles, fontName, outputDir, new SubtitleGenerator.VideoExportCallback() {
                             @Override
@@ -639,6 +742,20 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                             }
                         });
                         });
+                        if (burnSubtitles) {
+                            List<Uri> videoUris = new ArrayList<>();
+                            List<QueueItem> queueItems = viewModel.getQueueItems().getValue();
+                            if (queueItems != null) {
+                                for (QueueItem queueItem : queueItems) {
+                                    if (queueItem.getStatus() == QueueItem.Status.COMPLETED
+                                            && queueItem.getVideoUri() != null) {
+                                        videoUris.add(queueItem.getVideoUri());
+                                    }
+                                }
+                            }
+                            HardSubtitleExportSettings.show(this, videoUris, proceed::run);
+                        }
+                        else proceed.run();
                     }
                 });
     }
@@ -839,13 +956,19 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
         }
     }
 
+    private void updateModelLoadingIndicator() {
+        boolean speechModelLoading = !Boolean.TRUE.equals(viewModel.getModelReady().getValue())
+                && viewModel.getSelectedModelInfo().getValue() != null
+                && !Boolean.TRUE.equals(viewModel.getShortsAnalyzing().getValue());
+        binding.modelLoadingIndicator.setVisibility(speechModelLoading ? View.VISIBLE : View.GONE);
+    }
+
     private void observeViewModel() {
         viewModel.getSelectedModelInfo().observe(getViewLifecycleOwner(), info -> {
             if (info != null) {
                 binding.modelNameTV.setText(info.getLanguage());
             }
-            boolean isLoading = !Boolean.TRUE.equals(viewModel.getModelReady().getValue()) && info != null;
-            binding.modelLoadingIndicator.setVisibility(isLoading ? View.VISIBLE : View.GONE);
+            updateModelLoadingIndicator();
         });
 
         viewModel.getModelStatusText().observe(getViewLifecycleOwner(), text -> {
@@ -854,9 +977,11 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
 
         viewModel.getModelReady().observe(getViewLifecycleOwner(), ready -> {
             binding.addQueueFAB.setEnabled(ready);
-            boolean isLoading = !Boolean.TRUE.equals(ready) && viewModel.getSelectedModelInfo().getValue() != null;
-            binding.modelLoadingIndicator.setVisibility(isLoading ? View.VISIBLE : View.GONE);
+            updateModelLoadingIndicator();
         });
+
+        viewModel.getShortsAnalyzing().observe(getViewLifecycleOwner(), analyzing ->
+                updateModelLoadingIndicator());
 
         viewModel.getQueueItems().observe(getViewLifecycleOwner(), items -> {
             applyQueueFilter();
@@ -897,11 +1022,14 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                     filteredList.add(item);
                 }
             } else if (checkedId == R.id.filterProcessingChip) {
-                if (item.getStatus() == QueueItem.Status.PROCESSING || item.getStatus() == QueueItem.Status.EXPORTING) {
+                if (item.getStatus() == QueueItem.Status.PROCESSING
+                        || item.getStatus() == QueueItem.Status.EXPORTING
+                        || item.getStatus() == QueueItem.Status.ANALYZING_SHORTS) {
                     filteredList.add(item);
                 }
             } else if (checkedId == R.id.filterCompletedChip) {
-                if (item.getStatus() == QueueItem.Status.COMPLETED) {
+                if (item.getStatus() == QueueItem.Status.COMPLETED
+                        || item.getStatus() == QueueItem.Status.ANALYZING_SHORTS) {
                     filteredList.add(item);
                 }
             } else if (checkedId == R.id.filterFailedChip) {
@@ -914,7 +1042,8 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
         
         int done = 0;
         for (QueueItem item : allItems) {
-            if (item.getStatus() == QueueItem.Status.COMPLETED) done++;
+            if (item.getStatus() == QueueItem.Status.COMPLETED
+                    || item.getStatus() == QueueItem.Status.ANALYZING_SHORTS) done++;
         }
         String format = viewModel.getBatchFormat().getValue();
         binding.queueSummaryTV.setText(allItems.size() + " videos - " + done + " completed - " + format.toUpperCase(Locale.getDefault()));
@@ -930,7 +1059,8 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
         List<QueueItem> allItems = viewModel.getQueueItems().getValue();
         if (allItems != null) {
             for (QueueItem item : allItems) {
-                if (item.getStatus() == QueueItem.Status.COMPLETED) done++;
+                if (item.getStatus() == QueueItem.Status.COMPLETED
+                        || item.getStatus() == QueueItem.Status.ANALYZING_SHORTS) done++;
             }
         }
 

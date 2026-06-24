@@ -27,8 +27,18 @@ public class ShortsCandidateAdapter extends RecyclerView.Adapter<ShortsCandidate
 
     private final List<ShortsCandidate> items = new ArrayList<>();
     private Listener listener;
+    private boolean phraseMontage;
+    private boolean silenceRemoval;
 
     public void setListener(Listener listener) { this.listener = listener; }
+    public void setPhraseMontage(boolean phraseMontage) {
+        this.phraseMontage = phraseMontage;
+        notifyDataSetChanged();
+    }
+    public void setSilenceRemoval(boolean silenceRemoval) {
+        this.silenceRemoval = silenceRemoval;
+        notifyDataSetChanged();
+    }
     public void submit(List<ShortsCandidate> candidates) {
         items.clear();
         if (candidates != null) items.addAll(candidates);
@@ -66,6 +76,7 @@ public class ShortsCandidateAdapter extends RecyclerView.Adapter<ShortsCandidate
         void bind(ShortsCandidate item) {
             title.setText(item.getTitle());
             score.setText(item.getScore() + "/100");
+            score.setVisibility(phraseMontage ? View.GONE : View.VISIBLE);
             time.setText(format(item.getStartMs()) + " – " + format(item.getEndMs()) +
                     " • " + String.format(Locale.US, "%.1fs", item.getDurationMs() / 1000f));
             reason.setText(item.getHook().isEmpty() ? item.getReason() : item.getHook() + "\n" + item.getReason());
@@ -73,6 +84,8 @@ public class ShortsCandidateAdapter extends RecyclerView.Adapter<ShortsCandidate
             selected.setChecked(item.isSelected());
             selected.setOnCheckedChangeListener((button, checked) -> { item.setSelected(checked); changed(); });
             captions.setOnCheckedChangeListener(null);
+            captions.setVisibility(phraseMontage || silenceRemoval ? View.GONE : View.VISIBLE);
+            layer.setVisibility(phraseMontage || silenceRemoval ? View.GONE : View.VISIBLE);
             captions.setChecked(item.isBurnCaptions());
             captions.setOnCheckedChangeListener((button, checked) -> { item.setBurnCaptions(checked); layer.setEnabled(checked); changed(); });
             layer.setEnabled(item.isBurnCaptions());

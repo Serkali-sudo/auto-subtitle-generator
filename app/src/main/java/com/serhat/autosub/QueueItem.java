@@ -10,7 +10,8 @@ public class QueueItem {
         FAILED,
         CANCELLED,
         EXPORTING,
-        TRANSLATING
+        TRANSLATING,
+        ANALYZING_SHORTS
     }
 
     private long id;

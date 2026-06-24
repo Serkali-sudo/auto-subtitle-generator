@@ -123,21 +123,72 @@ public class ShortsReviewFragment extends Fragment {
             @Override public void onStopTrackingTouch(@NonNull com.google.android.material.slider.Slider slider) { persist(); }
         });
         binding.autoFrameBT.setOnClickListener(v -> runAutoFraming());
-        binding.exportSelectedBT.setOnClickListener(v -> ExportSettings.ensureLocationChosen(this, () -> {
+        binding.removeSilenceSwitch.setOnCheckedChangeListener((button, checked) -> {
+            applyRemoveSilenceSetting(checked);
+        });
+        binding.exportSelectedBT.setOnClickListener(v -> {
+            persist();
+            Runnable proceed = this::exportSelectedShorts;
+            if (hasSelectedBurnedCaptions()) HardSubtitleExportSettings.show(this,
+                    queueItem == null ? null : queueItem.getVideoUri(), proceed::run);
+            else proceed.run();
+        });
+    }
+
+    private boolean hasSelectedBurnedCaptions() {
+        if (project == null || project.isPhraseMontage() || project.isRemoveSilence()) return false;
+        for (ShortsCandidate candidate : project.getCandidates()) {
+            if (candidate.isSelected() && candidate.isBurnCaptions()) return true;
+        }
+        return false;
+    }
+
+    private void exportSelectedShorts() {
+        ExportSettings.ensureLocationChosen(this, () -> {
             File root = ExportSettings.getExportRoot(requireContext());
             if (!root.exists() && !root.mkdirs()) {
                 Toast.makeText(requireContext(), "Could not create the export folder", Toast.LENGTH_LONG).show();
                 return;
             }
-            persist();
-            viewModel.exportShorts(root);
-        }));
+            if (project != null && project.isPhraseMontage()) {
+                viewModel.exportPhraseMontageProject(root, new SubtitleGenerator.VideoExportCallback() {
+                    @Override public void onVideoExported(String filePath) {
+                        ExportFileActions.showExportCompleteDialog(
+                                ShortsReviewFragment.this, viewModel, filePath, true);
+                    }
+
+                    @Override public void onError(String errorMessage) {
+                        if (isAdded()) Toast.makeText(requireContext(), errorMessage, Toast.LENGTH_LONG).show();
+                    }
+
+                    @Override public void onProgressUpdate(int progress) { }
+                });
+            } else {
+                viewModel.exportShorts(root);
+            }
+        });
     }
 
     private void observe() {
         viewModel.getShortsProject().observe(getViewLifecycleOwner(), value -> {
             if (value == null) return;
             project = value;
+            adapter.setPhraseMontage(project.isPhraseMontage());
+            adapter.setSilenceRemoval(project.isRemoveSilence());
+            binding.removeSilenceSwitch.setVisibility(project.isPhraseMontage() ? View.GONE : View.VISIBLE);
+            binding.removeSilenceSwitch.setOnCheckedChangeListener(null);
+            binding.removeSilenceSwitch.setChecked(project.isRemoveSilence());
+            binding.removeSilenceSwitch.setOnCheckedChangeListener((button, checked) -> {
+                applyRemoveSilenceSetting(checked);
+            });
+            binding.exportSelectedBT.setText(project.isPhraseMontage()
+                    ? "Merge selected"
+                    : "Export selected");
+            androidx.appcompat.app.ActionBar bar =
+                    ((androidx.appcompat.app.AppCompatActivity) requireActivity()).getSupportActionBar();
+            if (bar != null) bar.setTitle(project.isPhraseMontage()
+                    ? "Phrase Montage Review"
+                    : "Shorts Review");
             adapter.submit(project.getCandidates());
             if (current == null && !project.getCandidates().isEmpty()) preview(project.getCandidates().get(0));
         });
@@ -149,6 +200,13 @@ public class ShortsReviewFragment extends Fragment {
             if (error != null && !error.isEmpty()) {
                 Toast.makeText(requireContext(), error, Toast.LENGTH_LONG).show();
                 viewModel.consumeShortsError();
+            }
+        });
+        viewModel.getShortsExportCompletedPath().observe(getViewLifecycleOwner(), filePath -> {
+            if (filePath != null && !filePath.isEmpty()) {
+                ExportFileActions.showExportCompleteDialog(
+                        ShortsReviewFragment.this, viewModel, filePath, true);
+                viewModel.consumeShortsExportCompletedPath();
             }
         });
     }
@@ -255,6 +313,19 @@ public class ShortsReviewFragment extends Fragment {
         }
     }
 
+    private void applyRemoveSilenceSetting(boolean enabled) {
+        if (project == null || project.isPhraseMontage()) return;
+        project.setRemoveSilence(enabled);
+        if (adapter != null) adapter.setSilenceRemoval(enabled);
+        if (enabled) {
+            for (ShortsCandidate candidate : project.getCandidates()) {
+                candidate.setBurnCaptions(false);
+            }
+            if (adapter != null) adapter.notifyDataSetChanged();
+        }
+        persist();
+    }
+
     private void editRange(ShortsCandidate candidate) {
         LinearLayout content = new LinearLayout(requireContext());
         content.setOrientation(LinearLayout.VERTICAL);
@@ -265,7 +336,9 @@ public class ShortsReviewFragment extends Fragment {
         content.addView(start); content.addView(end);
         new MaterialAlertDialogBuilder(requireContext())
                 .setTitle("Edit clip boundaries")
-                .setMessage("Boundaries snap to the nearest subtitle. Duration must remain " +
+                .setMessage(project != null && project.isPhraseMontage()
+                        ? "Adjust this occurrence precisely. Selected occurrences are merged in timeline order."
+                        : "Boundaries snap to the nearest subtitle. Duration must remain " +
                         project.getMinDurationSeconds() + "–" + project.getMaxDurationSeconds() + " seconds.")
                 .setView(content)
                 .setPositiveButton("Apply", (dialog, which) -> applyRange(candidate, start, end))
@@ -287,11 +360,24 @@ public class ShortsReviewFragment extends Fragment {
             SubtitleGenerator.SubtitleEntry startEntry = nearestEntry(wantedStart, true);
             SubtitleGenerator.SubtitleEntry endEntry = nearestEntry(wantedEnd, false);
             if (startEntry == null || endEntry == null) throw new IllegalArgumentException("No subtitle at that range");
+            if (project != null && project.isPhraseMontage()) {
+                if (wantedEnd <= wantedStart) throw new IllegalArgumentException("End must be after start");
+                candidate.setStartMs(wantedStart);
+                candidate.setEndMs(wantedEnd);
+                candidate.setStartSubtitleId(startEntry.getNumber());
+                candidate.setEndSubtitleId(endEntry.getNumber());
+                candidate.clearCropKeyframes();
+                persist();
+                adapter.notifyDataSetChanged();
+                preview(candidate);
+                return;
+            }
             long start = ShortsTranscriptAnalyzer.parseTimeMs(startEntry.getStartTime());
             long end = ShortsTranscriptAnalyzer.parseTimeMs(endEntry.getEndTime());
             long duration = end - start;
-            if (end <= start || duration < project.getMinDurationSeconds() * 1000L
-                    || duration > project.getMaxDurationSeconds() * 1000L) {
+            long minDurationAllowed = Math.max(3000L, project.getMinDurationSeconds() * 1000L - ShortsTranscriptAnalyzer.DURATION_TOLERANCE_MS);
+            long maxDurationAllowed = project.getMaxDurationSeconds() * 1000L + ShortsTranscriptAnalyzer.DURATION_TOLERANCE_MS;
+            if (end <= start || duration < minDurationAllowed || duration > maxDurationAllowed) {
                 throw new IllegalArgumentException("Snapped duration must be " + project.getMinDurationSeconds() + "–" + project.getMaxDurationSeconds() + " seconds");
             }
             candidate.setStartMs(start); candidate.setEndMs(end);

@@ -44,7 +44,6 @@ public class ModelsFragment extends Fragment {
 
         setupAdapter();
         setupFilters();
-        setupGemmaActions();
         observeViewModel();
     }
 
@@ -53,32 +52,38 @@ public class ModelsFragment extends Fragment {
         modelAdapter.setListener(new ModelAdapter.ModelActionListener() {
             @Override
             public void onUse(VoskModelInfo modelInfo) {
+                if (isGemmaModel(modelInfo)) return;
                 maybeSelectModel(modelInfo);
             }
 
             @Override
             public void onDownload(VoskModelInfo modelInfo) {
-                maybeDownloadModel(modelInfo);
+                if (isGemmaModel(modelInfo)) confirmGemmaDownload();
+                else maybeDownloadModel(modelInfo);
             }
 
             @Override
-            public void onCancelDownload() {
-                viewModel.cancelActiveDownload();
+            public void onCancelDownload(VoskModelInfo modelInfo) {
+                if (isGemmaModel(modelInfo)) viewModel.cancelGemmaDownload();
+                else viewModel.cancelActiveDownload();
             }
 
             @Override
-            public void onPauseDownload() {
-                viewModel.pauseActiveDownload();
+            public void onPauseDownload(VoskModelInfo modelInfo) {
+                if (isGemmaModel(modelInfo)) viewModel.pauseGemmaDownload();
+                else viewModel.pauseActiveDownload();
             }
 
             @Override
             public void onResumeDownload(VoskModelInfo modelInfo) {
-                viewModel.startModelDownload(modelInfo);
+                if (isGemmaModel(modelInfo)) viewModel.startGemmaDownload();
+                else viewModel.startModelDownload(modelInfo);
             }
 
             @Override
             public void onDelete(VoskModelInfo modelInfo) {
-                confirmDeleteModel(modelInfo);
+                if (isGemmaModel(modelInfo)) confirmDeleteGemmaModel();
+                else confirmDeleteModel(modelInfo);
             }
 
             @Override
@@ -102,24 +107,6 @@ public class ModelsFragment extends Fragment {
         binding.modelFilterChips.setOnCheckedStateChangeListener((group, checkedIds) -> refreshModels());
     }
 
-    private void setupGemmaActions() {
-        binding.gemmaActionBT.setOnClickListener(v -> {
-            boolean installed = Boolean.TRUE.equals(viewModel.getGemmaInstalled().getValue());
-            boolean downloading = Boolean.TRUE.equals(viewModel.getGemmaDownloading().getValue());
-            boolean paused = Boolean.TRUE.equals(viewModel.getGemmaDownloadPaused().getValue());
-            if (installed) {
-                new MaterialAlertDialogBuilder(requireContext())
-                        .setTitle("Delete Gemma 4 E2B")
-                        .setMessage("Remove the 2.6 GB local Shorts model? Saved candidate projects and exported clips are kept.")
-                        .setPositiveButton("Delete", (dialog, which) -> viewModel.deleteGemmaModel())
-                        .setNegativeButton("Cancel", null).show();
-            } else if (downloading) viewModel.pauseGemmaDownload();
-            else if (paused) viewModel.startGemmaDownload();
-            else confirmGemmaDownload();
-        });
-        binding.gemmaSecondaryBT.setOnClickListener(v -> viewModel.cancelGemmaDownload());
-    }
-
     private void confirmGemmaDownload() {
         if (!viewModel.isShortsAiSupported()) {
             Toast.makeText(requireContext(), "Gemma Shorts requires Android 12 or newer", Toast.LENGTH_LONG).show();
@@ -134,35 +121,6 @@ public class ModelsFragment extends Fragment {
                 .setPositiveButton("Download", (dialog, which) -> viewModel.startGemmaDownload())
                 .setNegativeButton("Cancel", null)
                 .show();
-    }
-
-    private void updateGemmaCard() {
-        boolean supported = viewModel.isShortsAiSupported();
-        boolean installed = Boolean.TRUE.equals(viewModel.getGemmaInstalled().getValue());
-        boolean downloading = Boolean.TRUE.equals(viewModel.getGemmaDownloading().getValue());
-        boolean paused = Boolean.TRUE.equals(viewModel.getGemmaDownloadPaused().getValue());
-        int progress = viewModel.getGemmaDownloadProgress().getValue() == null ? 0 : viewModel.getGemmaDownloadProgress().getValue();
-        String detail = viewModel.getGemmaDownloadStatus().getValue();
-        binding.gemmaProgress.setVisibility((downloading || paused) ? View.VISIBLE : View.GONE);
-        binding.gemmaProgress.setProgress(Math.max(0, progress));
-        binding.gemmaActionBT.setEnabled(supported);
-        binding.gemmaSecondaryBT.setVisibility((downloading || paused) ? View.VISIBLE : View.GONE);
-        if (!supported) {
-            binding.gemmaStatusTV.setText("Requires Android 12 or newer");
-            binding.gemmaActionBT.setText("Unavailable");
-        } else if (installed) {
-            binding.gemmaStatusTV.setText("Installed • ready for transcript-based Shorts extraction");
-            binding.gemmaActionBT.setText("Delete");
-        } else if (downloading) {
-            binding.gemmaStatusTV.setText(progress + "%" + (detail == null || detail.isEmpty() ? "" : " • " + detail));
-            binding.gemmaActionBT.setText("Pause");
-        } else if (paused) {
-            binding.gemmaStatusTV.setText("Paused at " + progress + "%");
-            binding.gemmaActionBT.setText("Resume");
-        } else {
-            binding.gemmaStatusTV.setText(detail == null || detail.isEmpty() ? "2.6 GB • Android 12+ • text only" : detail);
-            binding.gemmaActionBT.setText("Download");
-        }
     }
 
     private void refreshModels() {
@@ -210,11 +168,13 @@ public class ModelsFragment extends Fragment {
         viewModel.getQueuedDownloadModelIds().observe(getViewLifecycleOwner(), queued -> {
             refreshModels();
         });
-        viewModel.getGemmaInstalled().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
-        viewModel.getGemmaDownloading().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
-        viewModel.getGemmaDownloadProgress().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
-        viewModel.getGemmaDownloadStatus().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
-        viewModel.getGemmaDownloadPaused().observe(getViewLifecycleOwner(), value -> updateGemmaCard());
+        viewModel.getShowGemmaCatalogTrigger().observe(getViewLifecycleOwner(), show -> {
+            if (Boolean.TRUE.equals(show)) {
+                binding.modelSearchInput.setText("");
+                binding.filterAiChip.setChecked(true);
+                viewModel.consumeShowGemmaCatalogTrigger();
+            }
+        });
     }
 
     private void submitModelAdapter(List<VoskModelInfo> models) {
@@ -230,7 +190,19 @@ public class ModelsFragment extends Fragment {
         boolean paused = Boolean.TRUE.equals(viewModel.getActiveDownloadPaused().getValue());
         List<String> queuedIds = viewModel.getQueuedDownloadModelIds().getValue();
         
-        modelAdapter.submit(models, selectedId, downloadingId, progress, speed, eta, paused, queuedIds);
+        int gemmaProgress = viewModel.getGemmaDownloadProgress().getValue() == null
+                ? 0 : viewModel.getGemmaDownloadProgress().getValue();
+        modelAdapter.submit(models, selectedId, downloadingId, progress, speed, eta, paused, queuedIds,
+                Boolean.TRUE.equals(viewModel.getGemmaInstalled().getValue()),
+                Boolean.TRUE.equals(viewModel.getGemmaDownloading().getValue()),
+                gemmaProgress,
+                viewModel.getGemmaDownloadStatus().getValue(),
+                Boolean.TRUE.equals(viewModel.getGemmaDownloadPaused().getValue()),
+                viewModel.isShortsAiSupported());
+    }
+
+    private boolean isGemmaModel(VoskModelInfo modelInfo) {
+        return modelInfo != null && GemmaModelManager.MODEL_ID.equals(modelInfo.getId());
     }
 
     // --- Action Implementations ---
@@ -455,6 +427,15 @@ public class ModelsFragment extends Fragment {
                     viewModel.confirmDeleteModel(modelInfo);
                     Toast.makeText(requireContext(), "Model deleted", Toast.LENGTH_SHORT).show();
                 })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void confirmDeleteGemmaModel() {
+        new MaterialAlertDialogBuilder(requireContext())
+                .setTitle("Delete Gemma 4 E2B")
+                .setMessage("Remove the 2.6 GB local Shorts model? Saved candidate projects and exported clips are kept.")
+                .setPositiveButton("Delete", (dialog, which) -> viewModel.deleteGemmaModel())
                 .setNegativeButton("Cancel", null)
                 .show();
     }

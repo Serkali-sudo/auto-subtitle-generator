@@ -31,12 +31,18 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
     private String activeDownloadEta = "";
     private boolean activeDownloadPaused = false;
     private List<String> queuedModelIds = new ArrayList<>();
+    private boolean gemmaInstalled;
+    private boolean gemmaDownloading;
+    private int gemmaDownloadProgress;
+    private String gemmaDownloadStatus = "";
+    private boolean gemmaDownloadPaused;
+    private boolean gemmaSupported;
 
     public interface ModelActionListener {
         void onUse(VoskModelInfo modelInfo);
         void onDownload(VoskModelInfo modelInfo);
-        void onCancelDownload();
-        void onPauseDownload();
+        void onCancelDownload(VoskModelInfo modelInfo);
+        void onPauseDownload(VoskModelInfo modelInfo);
         void onResumeDownload(VoskModelInfo modelInfo);
         void onDelete(VoskModelInfo modelInfo);
         void onCancelQueuedDownload(VoskModelInfo modelInfo);
@@ -54,7 +60,10 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
     public void submit(List<VoskModelInfo> newModels, String selectedModelId,
                        String activeDownloadModelId, int activeDownloadProgress,
                        String activeDownloadSpeed, String activeDownloadEta,
-                       boolean activeDownloadPaused, List<String> queuedModelIds) {
+                       boolean activeDownloadPaused, List<String> queuedModelIds,
+                       boolean gemmaInstalled, boolean gemmaDownloading,
+                       int gemmaDownloadProgress, String gemmaDownloadStatus,
+                       boolean gemmaDownloadPaused, boolean gemmaSupported) {
         if (newModels == null) {
             newModels = new ArrayList<>();
         }
@@ -65,6 +74,12 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
         this.activeDownloadEta = activeDownloadEta == null ? "" : activeDownloadEta;
         this.activeDownloadPaused = activeDownloadPaused;
         this.queuedModelIds = queuedModelIds == null ? new ArrayList<>() : queuedModelIds;
+        this.gemmaInstalled = gemmaInstalled;
+        this.gemmaDownloading = gemmaDownloading;
+        this.gemmaDownloadProgress = gemmaDownloadProgress;
+        this.gemmaDownloadStatus = gemmaDownloadStatus == null ? "" : gemmaDownloadStatus;
+        this.gemmaDownloadPaused = gemmaDownloadPaused;
+        this.gemmaSupported = gemmaSupported;
 
         List<ModelRowState> newStates = new ArrayList<>(newModels.size());
         for (VoskModelInfo modelInfo : newModels) {
@@ -159,6 +174,10 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
         }
 
         void bind(VoskModelInfo modelInfo) {
+            if (isGemmaModel(modelInfo)) {
+                bindGemma(modelInfo);
+                return;
+            }
             boolean installed = modelManager.isInstalled(modelInfo.getId());
             boolean selected = selectedModelId.equals(modelInfo.getId());
             boolean downloading = activeDownloadModelId.equals(modelInfo.getId());
@@ -203,7 +222,7 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
                 deleteBT.setText("Cancel");
                 deleteBT.setContentDescription("Cancel download");
                 deleteBT.setOnClickListener(v -> {
-                    if (listener != null) listener.onCancelDownload();
+                    if (listener != null) listener.onCancelDownload(modelInfo);
                 });
             } else if (hasPartial) {
                 deleteBT.setVisibility(View.VISIBLE);
@@ -252,7 +271,7 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
                     primaryBT.setIconResource(R.drawable.ri_pause_line);
                     primaryBT.setContentDescription("Pause download " + activeDownloadProgress + "%");
                     primaryBT.setOnClickListener(v -> {
-                        if (listener != null) listener.onPauseDownload();
+                        if (listener != null) listener.onPauseDownload(modelInfo);
                     });
                 }
                 primaryBT.setEnabled(true);
@@ -297,6 +316,97 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
             }
         }
 
+        private void bindGemma(VoskModelInfo modelInfo) {
+            titleTV.setText(modelInfo.getLanguage());
+            sizeBadgeTV.setText(modelInfo.getSize());
+            applyCardOutline(modelInfo, false);
+
+            if (!gemmaSupported) {
+                detailTV.setText(detailText(modelInfo, "Requires Android 12 or newer"));
+            } else if (gemmaInstalled) {
+                detailTV.setText(detailText(modelInfo, modelInfo.getId() + " - Ready for Shorts extraction"));
+            } else if (gemmaDownloading) {
+                String status = gemmaDownloadStatus.isEmpty() ? "" : " (" + gemmaDownloadStatus + ")";
+                detailTV.setText(detailText(modelInfo,
+                        modelInfo.getId() + " - Downloading " + gemmaDownloadProgress + "%" + status));
+            } else if (gemmaDownloadPaused) {
+                detailTV.setText(detailText(modelInfo,
+                        modelInfo.getId() + " - Paused at " + gemmaDownloadProgress + "%"));
+            } else {
+                detailTV.setText(detailText(modelInfo, modelInfo.getId() + " - " + modelInfo.getLicense()));
+            }
+
+            chipGroup.removeAllViews();
+            addChip(gemmaInstalled ? "Installed" : "Cloud");
+            addChip("AI");
+            addChip("Shorts");
+            addChip("Heavy");
+            if (gemmaDownloading) addChip("Downloading");
+            else if (gemmaDownloadPaused) addChip("Paused");
+
+            downloadProgress.setVisibility(gemmaDownloading || gemmaDownloadPaused ? View.VISIBLE : View.GONE);
+            downloadProgress.setProgress(Math.max(0, gemmaDownloadProgress));
+
+            if (gemmaDownloading || gemmaDownloadPaused) {
+                deleteBT.setVisibility(View.VISIBLE);
+                deleteBT.setIconResource(R.drawable.ri_close_line);
+                deleteBT.setText("Cancel");
+                deleteBT.setContentDescription("Cancel Gemma download");
+                deleteBT.setOnClickListener(v -> {
+                    if (listener != null) listener.onCancelDownload(modelInfo);
+                });
+            } else if (gemmaInstalled) {
+                deleteBT.setVisibility(View.VISIBLE);
+                deleteBT.setIconResource(R.drawable.ri_delete_bin_line);
+                deleteBT.setText("Del");
+                deleteBT.setContentDescription("Delete Gemma model");
+                deleteBT.setOnClickListener(v -> {
+                    if (listener != null) listener.onDelete(modelInfo);
+                });
+            } else {
+                deleteBT.setVisibility(View.GONE);
+                deleteBT.setOnClickListener(null);
+            }
+
+            if (!gemmaSupported) {
+                primaryBT.setText("Unavailable");
+                primaryBT.setIconResource(R.drawable.ri_error_warning_line);
+                primaryBT.setContentDescription("Gemma requires Android 12 or newer");
+                primaryBT.setEnabled(false);
+                primaryBT.setOnClickListener(null);
+            } else if (gemmaInstalled) {
+                primaryBT.setText("Ready");
+                primaryBT.setIconResource(R.drawable.ri_checkbox_circle_line);
+                primaryBT.setContentDescription("Gemma is installed");
+                primaryBT.setEnabled(false);
+                primaryBT.setOnClickListener(null);
+            } else if (gemmaDownloading) {
+                primaryBT.setText("Pause");
+                primaryBT.setIconResource(R.drawable.ri_pause_line);
+                primaryBT.setContentDescription("Pause Gemma download " + gemmaDownloadProgress + "%");
+                primaryBT.setEnabled(true);
+                primaryBT.setOnClickListener(v -> {
+                    if (listener != null) listener.onPauseDownload(modelInfo);
+                });
+            } else if (gemmaDownloadPaused) {
+                primaryBT.setText("Resume");
+                primaryBT.setIconResource(R.drawable.ri_play_line);
+                primaryBT.setContentDescription("Resume Gemma download");
+                primaryBT.setEnabled(true);
+                primaryBT.setOnClickListener(v -> {
+                    if (listener != null) listener.onResumeDownload(modelInfo);
+                });
+            } else {
+                primaryBT.setText("Get");
+                primaryBT.setIconResource(R.drawable.ri_download_line);
+                primaryBT.setContentDescription("Download Gemma model");
+                primaryBT.setEnabled(true);
+                primaryBT.setOnClickListener(v -> {
+                    if (listener != null) listener.onDownload(modelInfo);
+                });
+            }
+        }
+
         private void applyCardOutline(VoskModelInfo modelInfo, boolean selected) {
             if (!(itemView instanceof MaterialCardView)) {
                 return;
@@ -304,7 +414,7 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
             MaterialCardView card = (MaterialCardView) itemView;
             int color = MaterialColors.getColor(
                     itemView.getContext(),
-                    modelInfo.isWhisper()
+                    modelInfo.isWhisper() || isGemmaModel(modelInfo)
                             ? com.google.android.material.R.attr.colorTertiary
                             : com.google.android.material.R.attr.colorPrimary,
                     0
@@ -349,6 +459,10 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
         }
     }
 
+    private boolean isGemmaModel(VoskModelInfo modelInfo) {
+        return modelInfo != null && GemmaModelManager.MODEL_ID.equals(modelInfo.getId());
+    }
+
     private class ModelRowState {
         private final String id;
         private final String language;
@@ -370,8 +484,10 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
         private final String downloadSpeed;
         private final String downloadEta;
         private final boolean downloadPaused;
+        private final boolean supported;
 
         private ModelRowState(VoskModelInfo modelInfo) {
+            boolean gemma = isGemmaModel(modelInfo);
             id = modelInfo.getId();
             language = modelInfo.getLanguage();
             size = modelInfo.getSize();
@@ -381,17 +497,20 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
             mobileRecommended = modelInfo.isMobileRecommended();
             veryLarge = modelInfo.isVeryLarge();
             bundled = modelInfo.isBundled();
-            installed = modelManager.isInstalled(id);
-            selected = selectedModelId.equals(id);
-            downloading = activeDownloadModelId.equals(id);
-            queued = queuedModelIds.contains(id);
-            hasPartial = !installed && !selected && !downloading && !queued && modelManager.hasPartialDownload(id);
-            loadMode = modelManager.getModelLoadMode(modelInfo);
-            downloadProgress = downloading ? activeDownloadProgress : 0;
-            partialProgress = hasPartial ? modelManager.getDownloadProgress(id) : 0;
-            downloadSpeed = downloading ? activeDownloadSpeed : "";
-            downloadEta = downloading ? activeDownloadEta : "";
-            downloadPaused = downloading && activeDownloadPaused;
+            installed = gemma ? gemmaInstalled : modelManager.isInstalled(id);
+            selected = !gemma && selectedModelId.equals(id);
+            downloading = gemma ? gemmaDownloading : activeDownloadModelId.equals(id);
+            queued = !gemma && queuedModelIds.contains(id);
+            hasPartial = gemma
+                    ? gemmaDownloadPaused
+                    : !installed && !selected && !downloading && !queued && modelManager.hasPartialDownload(id);
+            loadMode = gemma ? VoskModelManager.ModelLoadMode.FULL_QUALITY : modelManager.getModelLoadMode(modelInfo);
+            downloadProgress = downloading ? (gemma ? gemmaDownloadProgress : activeDownloadProgress) : 0;
+            partialProgress = hasPartial ? (gemma ? gemmaDownloadProgress : modelManager.getDownloadProgress(id)) : 0;
+            downloadSpeed = downloading ? (gemma ? gemmaDownloadStatus : activeDownloadSpeed) : "";
+            downloadEta = downloading && !gemma ? activeDownloadEta : "";
+            downloadPaused = gemma ? gemmaDownloadPaused : downloading && activeDownloadPaused;
+            supported = !gemma || gemmaSupported;
         }
 
         @Override
@@ -411,6 +530,7 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
                     && downloadProgress == other.downloadProgress
                     && partialProgress == other.partialProgress
                     && downloadPaused == other.downloadPaused
+                    && supported == other.supported
                     && loadMode == other.loadMode
                     && Objects.equals(id, other.id)
                     && Objects.equals(language, other.language)
@@ -425,7 +545,7 @@ public class ModelAdapter extends RecyclerView.Adapter<ModelAdapter.ModelViewHol
         public int hashCode() {
             return Objects.hash(id, language, size, license, details, whisper, mobileRecommended, veryLarge,
                     bundled, installed, selected, downloading, queued, hasPartial, loadMode,
-                    downloadProgress, partialProgress, downloadSpeed, downloadEta, downloadPaused);
+                    downloadProgress, partialProgress, downloadSpeed, downloadEta, downloadPaused, supported);
         }
     }
 }

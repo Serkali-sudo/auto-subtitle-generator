@@ -20,6 +20,7 @@ public final class ShortsTranscriptAnalyzer {
     // The UTF-8 estimate is deliberately conservative but not identical to Gemma tokenization.
     // This cap keeps actual input plus template and JSON output inside the mobile context.
     private static final long CHUNK_OVERLAP_MS = 30_000;
+    public static final long DURATION_TOLERANCE_MS = 5000L;
     private static final String SYSTEM_PROMPT =
             "You are AutoSub's expert short-form video editor. Select transcript spans that make compelling, self-contained vertical clips. " +
             "Prefer an immediate hook, one coherent idea, useful or surprising substance, and a clear payoff. Avoid greetings, sponsor reads, " +
@@ -202,7 +203,9 @@ public final class ShortsTranscriptAnalyzer {
                                 normalizedEnd.id + " for maximum duration");
                     }
                 }
-                if (duration < request.getMinDurationSeconds() * 1000L || duration > request.getMaxDurationSeconds() * 1000L) {
+                long minDurationAllowed = Math.max(3000L, request.getMinDurationSeconds() * 1000L - DURATION_TOLERANCE_MS);
+                long maxDurationAllowed = request.getMaxDurationSeconds() * 1000L + DURATION_TOLERANCE_MS;
+                if (duration < minDurationAllowed || duration > maxDurationAllowed) {
                     result.errors.add("Item " + (i + 1) + " duration " + (duration / 1000f) + "s is outside the requested range");
                     continue;
                 }
@@ -210,6 +213,9 @@ public final class ShortsTranscriptAnalyzer {
                 String hook = stringValue(object, "hook", "").trim();
                 String reason = stringValue(object, "reason", "").trim();
                 int score = intValue(object, "score", 50);
+                if (score > 100) {
+                    score = Math.round(score / 10f);
+                }
                 if (title.isEmpty() || reason.isEmpty()) {
                     result.errors.add("Item " + (i + 1) + " is missing title or reason");
                     continue;
@@ -297,6 +303,13 @@ public final class ShortsTranscriptAnalyzer {
         repaired = repaired.replaceAll(",(\\s*,)+", ",");
         // Quote unquoted S-labels (e.g. S12 -> "S12")
         repaired = repaired.replaceAll("(?<!\")\\b([Ss]\\d+)\\b(?!\")", "\"$1\"");
+        // Gemma occasionally omits the opening quote for a text value while still emitting
+        // its closing quote (e.g. "title": Useful moment"). Recover those common fields.
+        repaired = repaired.replaceAll(
+                "(\"(?:title|hook|reason)\"\\s*:\\s*+)(?!\")([^\\r\\n,}\\]]+?)\"(?=\\s*[,}])",
+                "$1\"$2\"");
+        // Likewise, tolerate a stray quote after an otherwise valid numeric score.
+        repaired = repaired.replaceAll("(\"score\"\\s*:\\s*)(-?\\d+)\"(?=\\s*[,}])", "$1$2");
         // Add missing commas between adjacent string tokens (e.g. "value" "key": -> "value", "key": or ["S1" "S2"] -> ["S1", "S2"])
         repaired = repaired.replaceAll("(\"[^\"]*\")\\s*(\"[^\"]*\")", "$1, $2");
         // Add missing commas after numbers/booleans followed by a key (e.g. 90 "title": -> 90, "title":)

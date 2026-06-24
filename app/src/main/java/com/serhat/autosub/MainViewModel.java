@@ -55,7 +55,7 @@ public class MainViewModel extends AndroidViewModel {
     private static final String KEY_SHORTS_DONT_SHOW_AGAIN = "shorts_dont_show_again";
     private static final String KEY_SHORTS_MODE_WORD_BY_WORD = "shorts_mode_word_by_word";
     private static final String KEY_BATCH_FORMAT = "batch_format";
-    private static final String KEY_SUBTITLE_MAX_LENGTH = "subtitle_max_length";
+    private static final String KEY_SUBTITLE_MAX_WORDS = "subtitle_max_words_per_subtitle";
     private static final String KEY_KEEP_SENTENCES_TOGETHER = "keep_sentences_together";
     private static final String KEY_SUPPRESS_WHISPER_SDH = "suppress_whisper_sdh";
     private static final String KEY_WHISPER_VAD_ENABLED = "whisper_vad_enabled";
@@ -106,7 +106,7 @@ public class MainViewModel extends AndroidViewModel {
 
     // --- Settings States ---
     private final MutableLiveData<String> batchFormat = new MutableLiveData<>("srt");
-    private final MutableLiveData<Integer> subtitleMaxLength = new MutableLiveData<>(SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH);
+    private final MutableLiveData<Integer> subtitleMaxWords = new MutableLiveData<>(SubtitleGenerator.DEFAULT_MAX_WORDS_PER_SUBTITLE);
     private final MutableLiveData<Boolean> keepSentencesTogether = new MutableLiveData<>(SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER);
     private final MutableLiveData<Boolean> suppressWhisperSdh = new MutableLiveData<>(true);
     private final MutableLiveData<Boolean> whisperVadEnabled = new MutableLiveData<>(false);
@@ -132,9 +132,11 @@ public class MainViewModel extends AndroidViewModel {
     private final MutableLiveData<Integer> activeNavigationTab = new MutableLiveData<>(R.id.nav_generate);
     private final MutableLiveData<Boolean> navigateToPreviewTrigger = new MutableLiveData<>(false);
     private final MutableLiveData<Boolean> navigateToShortsTrigger = new MutableLiveData<>(false);
+    private final MutableLiveData<Boolean> showGemmaCatalogTrigger = new MutableLiveData<>(false);
     private final MutableLiveData<ShortsProject> shortsProject = new MutableLiveData<>(null);
     private final MutableLiveData<Boolean> shortsAnalyzing = new MutableLiveData<>(false);
     private final MutableLiveData<String> shortsError = new MutableLiveData<>("");
+    private final MutableLiveData<String> shortsExportCompletedPath = new MutableLiveData<>("");
     
     private final MutableLiveData<String> ramUsage = new MutableLiveData<>("RAM: -- MB");
 
@@ -208,6 +210,7 @@ public class MainViewModel extends AndroidViewModel {
                         ? ((speed == null ? "" : speed) + (eta == null || eta.isEmpty() ? "" : " • " + eta)).trim()
                         : error;
                 gemmaDownloadStatus.setValue(status);
+                refreshModels(currentQuery, currentCheckedChipId);
             });
         }
 
@@ -222,6 +225,11 @@ public class MainViewModel extends AndroidViewModel {
                     if (shouldNavigate) navigateToShortsTrigger.setValue(true);
                 }
             });
+        }
+
+        @Override
+        public void onShortsExportCompleted(String filePath) {
+            handler.post(() -> shortsExportCompletedPath.setValue(filePath == null ? "" : filePath));
         }
     };
 
@@ -320,12 +328,42 @@ public class MainViewModel extends AndroidViewModel {
         if (selected == null || items == null) return;
         for (QueueItem item : items) {
             if (item.getId() == selected.getId()) {
-                selectedQueueItem.setValue(item);
-                currentVideoUri.setValue(item.getVideoUri());
-                subtitleEntries.setValue(item.getSubtitles());
+                if (selected != item) {
+                    selectedQueueItem.setValue(item);
+                }
+                Uri currentUri = currentVideoUri.getValue();
+                if (currentUri == null ? item.getVideoUri() != null : !currentUri.equals(item.getVideoUri())) {
+                    currentVideoUri.setValue(item.getVideoUri());
+                }
+                List<SubtitleGenerator.SubtitleEntry> currentEntries = subtitleEntries.getValue();
+                if (currentEntries != item.getSubtitles()
+                        && !sameSubtitleContent(currentEntries, item.getSubtitles())) {
+                    subtitleEntries.setValue(item.getSubtitles());
+                }
                 return;
             }
         }
+    }
+
+    private boolean sameSubtitleContent(List<SubtitleGenerator.SubtitleEntry> first,
+                                        List<SubtitleGenerator.SubtitleEntry> second) {
+        if (first == second) return true;
+        if (first == null || second == null || first.size() != second.size()) return false;
+        for (int i = 0; i < first.size(); i++) {
+            SubtitleGenerator.SubtitleEntry a = first.get(i);
+            SubtitleGenerator.SubtitleEntry b = second.get(i);
+            if (a == b) continue;
+            if (a == null || b == null
+                    || a.getNumber() != b.getNumber()
+                    || !java.util.Objects.equals(a.getStartTime(), b.getStartTime())
+                    || !java.util.Objects.equals(a.getEndTime(), b.getEndTime())
+                    || !java.util.Objects.equals(a.getText(), b.getText())
+                    || !java.util.Objects.equals(a.getTranslationText(), b.getTranslationText())
+                    || a.getWords().size() != b.getWords().size()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public void loadQueueItemsFromDb() {
@@ -367,7 +405,7 @@ public class MainViewModel extends AndroidViewModel {
     public LiveData<Float> getSubtitleCaptionScale() { return subtitleCaptionScale; }
     
     public LiveData<String> getBatchFormat() { return batchFormat; }
-    public LiveData<Integer> getSubtitleMaxLength() { return subtitleMaxLength; }
+    public LiveData<Integer> getSubtitleMaxWords() { return subtitleMaxWords; }
     public LiveData<Boolean> getKeepSentencesTogether() { return keepSentencesTogether; }
     public LiveData<Boolean> getSuppressWhisperSdh() { return suppressWhisperSdh; }
     public LiveData<Boolean> getWhisperVadEnabled() { return whisperVadEnabled; }
@@ -389,19 +427,23 @@ public class MainViewModel extends AndroidViewModel {
     public LiveData<Integer> getActiveNavigationTab() { return activeNavigationTab; }
     public LiveData<Boolean> getNavigateToPreviewTrigger() { return navigateToPreviewTrigger; }
     public LiveData<Boolean> getNavigateToShortsTrigger() { return navigateToShortsTrigger; }
+    public LiveData<Boolean> getShowGemmaCatalogTrigger() { return showGemmaCatalogTrigger; }
     public LiveData<ShortsProject> getShortsProject() { return shortsProject; }
     public LiveData<Boolean> getShortsAnalyzing() { return shortsAnalyzing; }
     public LiveData<String> getShortsError() { return shortsError; }
     public void consumeShortsError() { shortsError.setValue(""); }
+    public LiveData<String> getShortsExportCompletedPath() { return shortsExportCompletedPath; }
+    public void consumeShortsExportCompletedPath() { shortsExportCompletedPath.setValue(""); }
     public LiveData<String> getRamUsage() { return ramUsage; }
 
     public VoskModelManager getModelManager() { return modelManager; }
 
     private void loadSettings() {
         batchFormat.setValue(settingsPrefs.getString(KEY_BATCH_FORMAT, "srt"));
-        int maxLength = settingsPrefs.getInt(KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH);
-        subtitleMaxLength.setValue(maxLength);
-        subtitleGenerator.setMaxSubtitleLength(maxLength);
+        int maxWords = settingsPrefs.getInt(KEY_SUBTITLE_MAX_WORDS,
+                SubtitleGenerator.DEFAULT_MAX_WORDS_PER_SUBTITLE);
+        subtitleMaxWords.setValue(maxWords);
+        subtitleGenerator.setMaxWordsPerSubtitle(maxWords);
         boolean savedKeepSentencesTogether = settingsPrefs.getBoolean(
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER);
         keepSentencesTogether.setValue(savedKeepSentencesTogether);
@@ -443,6 +485,15 @@ public class MainViewModel extends AndroidViewModel {
 
     public void setActiveNavigationTab(int id) {
         activeNavigationTab.setValue(id);
+    }
+
+    public void openModelsForGemma() {
+        showGemmaCatalogTrigger.setValue(true);
+        activeNavigationTab.setValue(R.id.nav_models);
+    }
+
+    public void consumeShowGemmaCatalogTrigger() {
+        showGemmaCatalogTrigger.setValue(false);
     }
 
     public void consumeNavigateToPreviewTrigger() {
@@ -523,6 +574,73 @@ public class MainViewModel extends AndroidViewModel {
         runWhenTaskServiceReady(true, () -> taskService.exportShorts(item, project, outputDir));
     }
 
+    public void preparePhraseMontage(QueueItem item, String phrase, boolean keepWholeSubtitle) {
+        if (item == null) return;
+        try {
+            List<PhraseMontageMatcher.Match> matches = PhraseMontageMatcher.findMatches(
+                    item.getSubtitles(), phrase, keepWholeSubtitle);
+            if (matches.isEmpty()) {
+                shortsError.setValue("No occurrences of ‘" + phrase.trim() + "’ were found");
+                return;
+            }
+            List<ShortsCandidate> candidates = new ArrayList<>();
+            for (int i = 0; i < matches.size(); i++) {
+                PhraseMontageMatcher.Match match = matches.get(i);
+                ShortsCandidate candidate = new ShortsCandidate(
+                        match.getStartSubtitleId(), match.getEndSubtitleId(),
+                        match.getStartMs(), match.getEndMs(),
+                        "Match " + (i + 1) + ": " + phrase,
+                        "", keepWholeSubtitle ? "Complete subtitle cue" : "Exact phrase timing", 100);
+                candidate.setBurnCaptions(false);
+                candidates.add(candidate);
+            }
+            ShortsProject phraseProject = new ShortsProject(item.getId(), phrase,
+                    candidates.size(), 0, Integer.MAX_VALUE / 1000);
+            phraseProject.setMode(ShortsProject.Mode.PHRASE_MONTAGE);
+            phraseProject.setPhrase(phrase);
+            phraseProject.setKeepWholeSubtitle(keepWholeSubtitle);
+            phraseProject.setCandidates(candidates);
+            selectedQueueItem.setValue(item);
+            currentVideoUri.setValue(item.getVideoUri());
+            subtitleEntries.setValue(item.getSubtitles());
+            shortsProject.setValue(phraseProject);
+            saveShortsProject(phraseProject);
+            navigateToShortsTrigger.setValue(true);
+        } catch (Exception error) {
+            shortsError.setValue(error.getMessage() == null ? "Could not create phrase montage" : error.getMessage());
+        }
+    }
+
+    public void exportPhraseMontageProject(File outputDir, SubtitleGenerator.VideoExportCallback callback) {
+        QueueItem item = selectedQueueItem.getValue();
+        ShortsProject project = shortsProject.getValue();
+        if (item == null || project == null || !project.isPhraseMontage()) {
+            callback.onError("No phrase montage is ready");
+            return;
+        }
+        saveShortsProject(project);
+        runWhenTaskServiceReady(true, () -> taskService.exportPhraseMontage(
+                item, project, outputDir, callback));
+    }
+
+    public void exportCondensedQueueItem(QueueItem item, boolean useVad, File outputDir,
+                                         SubtitleGenerator.VideoExportCallback callback) {
+        exportCondensedQueueItem(item, useVad, outputDir, SubtitleGenerator.CondensedOutputMode.VIDEO,
+                SubtitleGenerator.SubtitleLayerMode.ORIGINAL, callback);
+    }
+
+    public void exportCondensedQueueItem(QueueItem item, boolean useVad, File outputDir,
+                                         SubtitleGenerator.CondensedOutputMode outputMode,
+                                         SubtitleGenerator.SubtitleLayerMode layerMode,
+                                         SubtitleGenerator.VideoExportCallback callback) {
+        if (item == null) {
+            callback.onError("No queue item selected");
+            return;
+        }
+        runWhenTaskServiceReady(true, () -> taskService.exportCondensedQueueItem(
+                item, useVad, outputDir, outputMode, layerMode, callback));
+    }
+
     // --- Settings Setter ---
     public void setBatchFormat(String format) {
         batchFormat.setValue(format);
@@ -530,12 +648,12 @@ public class MainViewModel extends AndroidViewModel {
         refreshQueue();
     }
 
-    public void setSubtitleMaxLength(int maxLength) {
-        int boundedLength = Math.max(SubtitleGenerator.MIN_SUBTITLE_LENGTH,
-                Math.min(SubtitleGenerator.MAX_SUBTITLE_LENGTH_LIMIT, maxLength));
-        subtitleMaxLength.setValue(boundedLength);
-        subtitleGenerator.setMaxSubtitleLength(boundedLength);
-        settingsPrefs.edit().putInt(KEY_SUBTITLE_MAX_LENGTH, boundedLength).apply();
+    public void setSubtitleMaxWords(int maxWords) {
+        int boundedWords = Math.max(SubtitleGenerator.MIN_WORDS_PER_SUBTITLE,
+                Math.min(SubtitleGenerator.MAX_WORDS_PER_SUBTITLE_LIMIT, maxWords));
+        subtitleMaxWords.setValue(boundedWords);
+        subtitleGenerator.setMaxWordsPerSubtitle(boundedWords);
+        settingsPrefs.edit().putInt(KEY_SUBTITLE_MAX_WORDS, boundedWords).apply();
     }
 
     public void setKeepSentencesTogether(boolean keepTogether) {
@@ -759,25 +877,43 @@ public class MainViewModel extends AndroidViewModel {
         this.currentQuery = query == null ? "" : query;
         this.currentCheckedChipId = checkId;
 
-        List<VoskModelInfo> models = modelManager.search(currentQuery);
+        List<VoskModelInfo> models = new ArrayList<>(modelManager.search(currentQuery));
+        VoskModelInfo gemmaModel = createGemmaCatalogModel();
+        if (matchesGemmaQuery(currentQuery, gemmaModel)) {
+            models.add(gemmaModel);
+        }
         if (checkId == R.id.filterInstalledChip) {
             List<VoskModelInfo> filtered = new ArrayList<>();
             for (VoskModelInfo model : models) {
-                if (modelManager.isInstalled(model.getId())) filtered.add(model);
+                boolean installed = isGemmaCatalogModel(model)
+                        ? Boolean.TRUE.equals(gemmaInstalled.getValue())
+                        : modelManager.isInstalled(model.getId());
+                if (installed) filtered.add(model);
             }
             models = filtered;
         } else if (checkId == R.id.filterMobileChip) {
             List<VoskModelInfo> filtered = new ArrayList<>();
             for (VoskModelInfo model : models) {
-                if (model.isMobileRecommended()) filtered.add(model);
+                if (!isGemmaCatalogModel(model) && model.isMobileRecommended()) filtered.add(model);
+            }
+            models = filtered;
+        } else if (checkId == R.id.filterAiChip) {
+            List<VoskModelInfo> filtered = new ArrayList<>();
+            for (VoskModelInfo model : models) {
+                if (isGemmaCatalogModel(model)) filtered.add(model);
             }
             models = filtered;
         } else if (checkId == R.id.filterDownloadingChip) {
             List<VoskModelInfo> filtered = new ArrayList<>();
             String activeId = activeDownloadModelId.getValue();
             for (VoskModelInfo model : models) {
-                boolean isDownloading = activeId != null && activeId.equals(model.getId());
-                boolean isPartial = modelManager.hasPartialDownload(model.getId());
+                boolean gemma = isGemmaCatalogModel(model);
+                boolean isDownloading = gemma
+                        ? Boolean.TRUE.equals(gemmaDownloading.getValue())
+                        : activeId != null && activeId.equals(model.getId());
+                boolean isPartial = gemma
+                        ? Boolean.TRUE.equals(gemmaDownloadPaused.getValue())
+                        : modelManager.hasPartialDownload(model.getId());
                 if (isDownloading || isPartial) {
                     filtered.add(model);
                 }
@@ -786,7 +922,7 @@ public class MainViewModel extends AndroidViewModel {
         }
 
         String downloadingId = activeDownloadModelId.getValue();
-        if (downloadingId != null) {
+        if (downloadingId != null && checkId != R.id.filterAiChip) {
             boolean alreadyInList = false;
             for (VoskModelInfo m : models) {
                 if (m.getId().equals(downloadingId)) {
@@ -804,7 +940,37 @@ public class MainViewModel extends AndroidViewModel {
             }
         }
 
+        Collections.sort(models, Comparator.comparing(VoskModelInfo::getLanguage)
+                .thenComparing(VoskModelInfo::getId));
+
         catalogModels.setValue(models);
+    }
+
+    private VoskModelInfo createGemmaCatalogModel() {
+        return new VoskModelInfo(
+                GemmaModelManager.MODEL_ID,
+                "Gemma 4 E2B",
+                "ai-shorts",
+                "2.6 GB",
+                "Gemma Terms",
+                "On-device AI Shorts editor • Android 12+ • text only",
+                "",
+                false,
+                "",
+                false);
+    }
+
+    private boolean matchesGemmaQuery(String query, VoskModelInfo model) {
+        String normalized = query == null ? "" : query.trim().toLowerCase(Locale.US);
+        if (normalized.isEmpty()) return true;
+        return model.getLanguage().toLowerCase(Locale.US).contains(normalized)
+                || model.getId().toLowerCase(Locale.US).contains(normalized)
+                || model.getDetails().toLowerCase(Locale.US).contains(normalized)
+                || "ai shorts gemma".contains(normalized);
+    }
+
+    private boolean isGemmaCatalogModel(VoskModelInfo model) {
+        return model != null && GemmaModelManager.MODEL_ID.equals(model.getId());
     }
 
     public VoskModelManager.ModelLoadMode getModelLoadMode(VoskModelInfo modelInfo) {
@@ -1303,10 +1469,8 @@ public class MainViewModel extends AndroidViewModel {
         // The item's shorts flag already captures the word-by-word choice made when it was queued.
         boolean useWordByWord = queueItem.isShortsVideo();
         subtitleGenerator.setWordByWordMode(useWordByWord);
-        subtitleGenerator.setMaxSubtitleLength(settingsPrefs.getInt(
-                KEY_SUBTITLE_MAX_LENGTH, SubtitleGenerator.DEFAULT_MAX_SUBTITLE_LENGTH));
         subtitleGenerator.setMaxWordsPerSubtitle(settingsPrefs.getInt(
-                "shorts_max_words_per_subtitle", SubtitleGenerator.DEFAULT_MAX_WORDS_PER_SUBTITLE));
+                KEY_SUBTITLE_MAX_WORDS, SubtitleGenerator.DEFAULT_MAX_WORDS_PER_SUBTITLE));
         subtitleGenerator.setKeepSentencesTogether(settingsPrefs.getBoolean(
                 KEY_KEEP_SENTENCES_TOGETHER, SubtitleGenerator.DEFAULT_KEEP_SENTENCES_TOGETHER));
         subtitleGenerator.setSuppressWhisperSdh(settingsPrefs.getBoolean(KEY_SUPPRESS_WHISPER_SDH, true));

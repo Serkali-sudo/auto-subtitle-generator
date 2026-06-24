@@ -67,24 +67,24 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:alpha="0.75"
-                    android:text="Sentence split length"
+                    android:text="Maximum words per subtitle"
                     android:textSize="13sp" />
 
                 <TextView
-                    android:id="@+id/subtitleLengthValueTV"
+                    android:id="@+id/subtitleWordsValueTV"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="42 chars"
+                    android:text="10 words"
                     android:textSize="13sp" />
             </LinearLayout>
 
             <com.google.android.material.slider.Slider
-                android:id="@+id/subtitleLengthSlider"
+                android:id="@+id/subtitleWordsSlider"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:value="42"
-                android:valueFrom="24"
-                android:valueTo="96"
+                android:value="10"
+                android:valueFrom="3"
+                android:valueTo="25"
                 android:stepSize="1" />
 
             <com.google.android.material.materialswitch.MaterialSwitch
