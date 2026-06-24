@@ -11,7 +11,7 @@ import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Log;
+import com.serhat.autosub.core.DebugLog;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.AutoCompleteTextView;
@@ -101,7 +101,7 @@ public final class HardSubtitleExportSettings {
             try {
                 source = inspectSources(appContext, videoUris);
             } catch (Exception error) {
-                Log.e(TAG, "Could not inspect hard-subtitle export capabilities", error);
+                DebugLog.e(TAG, "Could not inspect hard-subtitle export capabilities", error);
             }
             SourceInfo finalSource = source;
             new Handler(Looper.getMainLooper()).post(() -> {
@@ -251,7 +251,7 @@ public final class HardSubtitleExportSettings {
             result.add("hevc_mediacodec");
         }
         result.add("mpeg4");
-        Log.i(TAG, "ANDROID_ENCODERS_FOR_" + width + "x" + height + "=" + String.join(",", result));
+        DebugLog.i(TAG, "ANDROID_ENCODERS_FOR_" + width + "x" + height + "=" + String.join(",", result));
         return result;
     }
 
@@ -271,7 +271,7 @@ public final class HardSubtitleExportSettings {
                 }
             }
         } catch (Exception error) {
-            Log.w(TAG, "Could not query Android encoder support for " + mime, error);
+            DebugLog.w(TAG, "Could not query Android encoder support for " + mime, error);
         }
         return false;
     }
@@ -558,7 +558,7 @@ public final class HardSubtitleExportSettings {
                 }
             }
         } catch (Exception error) {
-            Log.w(TAG, "Could not query CBR support for " + mime, error);
+            DebugLog.w(TAG, "Could not query CBR support for " + mime, error);
         }
         return false;
     }

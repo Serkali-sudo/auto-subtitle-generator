@@ -1,6 +1,6 @@
 package com.serhat.autosub.shorts;
 
-import android.util.Log;
+import com.serhat.autosub.core.DebugLog;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -441,11 +441,11 @@ public final class ShortsTranscriptAnalyzer {
     // android.util.Log is unavailable in local JVM tests; keep production logging without
     // forcing tests to depend on an Android logger implementation.
     private static void logI(String message) {
-        try { Log.i(TAG, message); } catch (RuntimeException ignored) { }
+        try { DebugLog.i(TAG, message); } catch (RuntimeException ignored) { }
     }
 
     private static void logW(String message) {
-        try { Log.w(TAG, message); } catch (RuntimeException ignored) { }
+        try { DebugLog.w(TAG, message); } catch (RuntimeException ignored) { }
     }
 
     private static final class Entry {

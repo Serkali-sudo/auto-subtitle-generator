@@ -6,6 +6,10 @@ android {
     namespace 'com.whispercpp'
     compileSdk 36
 
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         minSdk 24
         targetSdk 36

@@ -13,12 +13,21 @@
 #include <stdbool.h>
 
 static atomic_bool g_should_abort = ATOMIC_VAR_INIT(false);
+static atomic_bool g_debug_logging = ATOMIC_VAR_INIT(false);
 
 #define UNUSED(x) (void)(x)
 #define TAG "JNI"
 
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,     TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN,     TAG, __VA_ARGS__)
+#define LOGI(...) do { if (atomic_load_explicit(&g_debug_logging, memory_order_relaxed)) \
+    __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__); } while (0)
+#define LOGW(...) do { if (atomic_load_explicit(&g_debug_logging, memory_order_relaxed)) \
+    __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__); } while (0)
+
+static void silent_whisper_log_callback(enum ggml_log_level level, const char *text, void *user_data) {
+    UNUSED(level);
+    UNUSED(text);
+    UNUSED(user_data);
+}
 
 static JavaVM* g_jvm = NULL;
 
@@ -683,6 +692,15 @@ void progress_callback(struct whisper_context * ctx, struct whisper_state * stat
 static bool abort_callback(void* user_data) {
     UNUSED(user_data);
     return atomic_load_explicit(&g_should_abort, memory_order_relaxed);
+}
+
+JNIEXPORT void JNICALL
+Java_com_whispercpp_whisper_WhisperLib_00024Companion_setDebugLogging(
+        JNIEnv* env, jclass clazz, jboolean enabled) {
+    UNUSED(env);
+    UNUSED(clazz);
+    atomic_store_explicit(&g_debug_logging, enabled == JNI_TRUE, memory_order_relaxed);
+    whisper_log_set(enabled == JNI_TRUE ? NULL : silent_whisper_log_callback, NULL);
 }
 
 JNIEXPORT void JNICALL

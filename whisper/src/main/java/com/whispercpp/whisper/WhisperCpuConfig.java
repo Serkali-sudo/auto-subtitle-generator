@@ -3,7 +3,7 @@ package com.whispercpp.whisper;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
-import android.util.Log;
+import com.whispercpp.DebugLog;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -76,9 +76,9 @@ public final class WhisperCpuConfig {
         trialIndex = 0;
 
         if (cachedThreadCount > 0) {
-            Log.i(LOG_TAG, "Using cached Whisper thread count " + cachedThreadCount);
+            DebugLog.i(LOG_TAG, "Using cached Whisper thread count " + cachedThreadCount);
         } else {
-            Log.i(LOG_TAG, "Starting Whisper thread auto-tune candidates: "
+            DebugLog.i(LOG_TAG, "Starting Whisper thread auto-tune candidates: "
                     + formatCandidates(trialThreadCounts));
         }
     }
@@ -109,7 +109,7 @@ public final class WhisperCpuConfig {
 
         double samplesPerMs = audioSamples / (double) wallTimeMs;
         trialThroughput[trialIndex] = samplesPerMs;
-        Log.i(LOG_TAG, "Whisper thread auto-tune sample: threads=" + threads
+        DebugLog.i(LOG_TAG, "Whisper thread auto-tune sample: threads=" + threads
                 + ", audioMs=" + (audioSamples * 1000L / 16000L)
                 + ", wallMs=" + wallTimeMs
                 + ", samplesPerMs=" + String.format(java.util.Locale.US, "%.2f", samplesPerMs));
@@ -125,7 +125,7 @@ public final class WhisperCpuConfig {
         if (bestThroughput > 0.0) {
             cachedThreadCount = bestThreadCount;
             writeCachedThreadCount(activeCacheKey, cachedThreadCount);
-            Log.i(LOG_TAG, "Cached Whisper thread count " + cachedThreadCount
+            DebugLog.i(LOG_TAG, "Cached Whisper thread count " + cachedThreadCount
                     + " for " + activeCacheKey);
         }
     }
@@ -263,7 +263,7 @@ class CpuInfo {
         try {
             return getHighPerfCpuCountByFrequencies();
         } catch (Exception e) {
-            Log.d(LOG_TAG, "Couldn't read CPU frequencies", e);
+            DebugLog.d(LOG_TAG, "Couldn't read CPU frequencies", e);
             return getHighPerfCpuCountByVariant();
         }
     }
@@ -276,7 +276,7 @@ class CpuInfo {
             }
         });
 
-        Log.d(LOG_TAG, "Binned cpu frequencies (frequency, count): " + binnedValues(values));
+        DebugLog.d(LOG_TAG, "Binned cpu frequencies (frequency, count): " + binnedValues(values));
 
         return countDroppingMin(values);
     }
@@ -295,7 +295,7 @@ class CpuInfo {
             }
         });
 
-        Log.d(LOG_TAG, "Binned cpu variants (variant, count): " + binnedValues(values));
+        DebugLog.d(LOG_TAG, "Binned cpu variants (variant, count): " + binnedValues(values));
 
         return countKeepingMin(values);
     }
@@ -371,7 +371,7 @@ class CpuInfo {
         try {
             return readCpuInfo().getHighPerfCpuCountInternal();
         } catch (Exception e) {
-            Log.d(LOG_TAG, "Couldn't read CPU info", e);
+            DebugLog.d(LOG_TAG, "Couldn't read CPU info", e);
 
             // Our best guess -- just return the # of CPUs minus 4.
             return Math.max(Runtime.getRuntime().availableProcessors() - 4, 0);

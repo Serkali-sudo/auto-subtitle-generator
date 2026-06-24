@@ -19,6 +19,7 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.view.ActionMode;
 import androidx.fragment.app.Fragment;
@@ -28,6 +29,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.serhat.autosub.R;
 import com.serhat.autosub.core.ApplicationPath;
+import com.serhat.autosub.core.DebugLog;
 import com.serhat.autosub.databinding.DialogShortsAnalysisBinding;
 import com.serhat.autosub.databinding.FragmentGenerateBinding;
 import com.serhat.autosub.exports.ExportFileActions;
@@ -63,7 +65,7 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
                         try {
                             requireContext().getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
                         } catch (Exception e) {
-                            android.util.Log.e("GenerateFragment", "Failed to take persistable URI permission", e);
+                            DebugLog.e("GenerateFragment", "Failed to take persistable URI permission", e);
                         }
                     }
                     addVideosToQueue(uris);
@@ -266,25 +268,39 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
         dialogBinding.wordsPerSubtitleSlider.setEnabled(!isWordByWord);
         dialogBinding.wordsPerSubtitleLabel.setEnabled(!isWordByWord);
 
-        new MaterialAlertDialogBuilder(requireContext())
+        AlertDialog analysisDialog = new MaterialAlertDialogBuilder(requireContext())
                 .setTitle("Find the best Shorts")
                 .setMessage("Gemma analyzes the saved transcript entirely on this device.")
                 .setView(dialogBinding.getRoot())
-                .setPositiveButton("Analyze", (dialog, which) -> {
-                    settingsPrefs.edit()
-                            .putBoolean("shorts_mode_word_by_word", dialogBinding.wordByWordSwitch.isChecked())
-                            .putInt("shorts_max_words_per_subtitle", (int) dialogBinding.wordsPerSubtitleSlider.getValue())
-                            .apply();
-                    viewModel.analyzeShorts(item,
-                            parseInt(dialogBinding.clipCountInput, 5),
-                            parseInt(dialogBinding.minDurationInput, 20),
-                            parseInt(dialogBinding.maxDurationInput, 60),
-                            textOf(dialogBinding.focusInput),
-                            !dialogBinding.cpuSwitch.isChecked(),
-                            dialogBinding.thinkingSwitch.isChecked());
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        dialogBinding.cancelButton.setOnClickListener(ignored -> analysisDialog.dismiss());
+        dialogBinding.startAnalysisButton.setOnClickListener(ignored -> {
+            settingsPrefs.edit()
+                    .putBoolean("shorts_mode_word_by_word", dialogBinding.wordByWordSwitch.isChecked())
+                    .putInt("shorts_max_words_per_subtitle", (int) dialogBinding.wordsPerSubtitleSlider.getValue())
+                    .apply();
+            analysisDialog.dismiss();
+            viewModel.analyzeShorts(item,
+                    parseInt(dialogBinding.clipCountInput, 5),
+                    parseInt(dialogBinding.minDurationInput, 20),
+                    parseInt(dialogBinding.maxDurationInput, 60),
+                    textOf(dialogBinding.focusInput),
+                    !dialogBinding.cpuSwitch.isChecked(),
+                    dialogBinding.thinkingSwitch.isChecked());
+        });
+        analysisDialog.setOnShowListener(ignored -> {
+            android.graphics.Rect visibleArea = new android.graphics.Rect();
+            analysisDialog.getWindow().getDecorView().getWindowVisibleDisplayFrame(visibleArea);
+            int densityPadding = Math.round(260 * getResources().getDisplayMetrics().density);
+            int minimumFormHeight = Math.round(140 * getResources().getDisplayMetrics().density);
+            int maximumFormHeight = Math.round(520 * getResources().getDisplayMetrics().density);
+            int formHeight = Math.min(maximumFormHeight,
+                    Math.max(minimumFormHeight, visibleArea.height() - densityPadding));
+            android.view.ViewGroup.LayoutParams params = dialogBinding.getRoot().getLayoutParams();
+            params.height = formHeight;
+            dialogBinding.getRoot().setLayoutParams(params);
+        });
+        analysisDialog.show();
     }
 
     private int parseInt(android.widget.EditText field, int fallback) {

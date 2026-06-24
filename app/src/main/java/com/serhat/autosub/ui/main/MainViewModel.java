@@ -19,6 +19,7 @@ import androidx.lifecycle.MutableLiveData;
 
 import com.serhat.autosub.R;
 import com.serhat.autosub.core.ApplicationPath;
+import com.serhat.autosub.core.DebugLog;
 import com.serhat.autosub.core.NotificationHelper;
 import com.serhat.autosub.exports.ExportRecord;
 import com.serhat.autosub.exports.ExportStore;
@@ -1373,7 +1374,7 @@ public class MainViewModel extends AndroidViewModel {
                 }
             }
         } catch (Exception e) {
-            android.util.Log.e("MainViewModel", "Error generating thumbnail", e);
+            DebugLog.e("MainViewModel", "Error generating thumbnail", e);
         } finally {
             try {
                 retriever.release();

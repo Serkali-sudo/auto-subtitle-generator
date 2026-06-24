@@ -4,7 +4,7 @@ package com.serhat.autosub.subtitles;
 import android.content.Context;
 
 import android.net.Uri;
-import android.util.Log;
+import com.serhat.autosub.core.DebugLog;
 
 import com.arthenica.ffmpegkit.FFmpegKit;
 import com.arthenica.ffmpegkit.FFmpegSession;
@@ -251,7 +251,7 @@ public class SubtitleGenerator {
             return;
         }
 
-        Log.d(TAG, "Called Model Init for " + modelInfo.getId());
+        DebugLog.d(TAG, "Called Model Init for " + modelInfo.getId());
 
         final long sessionId;
         Model previousModel;
@@ -297,11 +297,11 @@ public class SubtitleGenerator {
 
                     synchronized (modelLock) {
                         if (sessionId != currentLoadSessionId) {
-                            Log.d(TAG, "Obsolete Whisper model loaded for session " + sessionId + ", releasing it immediately.");
+                            DebugLog.d(TAG, "Obsolete Whisper model loaded for session " + sessionId + ", releasing it immediately.");
                             try {
                                 loadedContext.release();
                             } catch (Throwable e) {
-                                Log.e(TAG, "Error releasing obsolete Whisper context", e);
+                                DebugLog.e(TAG, "Error releasing obsolete Whisper context", e);
                             }
                             return;
                         }
@@ -309,10 +309,10 @@ public class SubtitleGenerator {
                         this.currentModelInfo = modelInfo;
                     }
 
-                    Log.d(TAG, "Whisper model initialized: " + modelInfo.getId());
+                    DebugLog.d(TAG, "Whisper model initialized: " + modelInfo.getId());
                     callback.onModelInitialized();
                 } catch (Throwable e) {
-                    Log.e(TAG, "Failed to load Whisper model", e);
+                    DebugLog.e(TAG, "Failed to load Whisper model", e);
                     synchronized (modelLock) {
                         if (sessionId == currentLoadSessionId) {
                             callback.onError(e.getMessage() == null ? "Failed to load model" : e.getMessage());
@@ -328,22 +328,22 @@ public class SubtitleGenerator {
                     (loadedModel) -> {
                         synchronized (modelLock) {
                             if (sessionId != currentLoadSessionId) {
-                                Log.d(TAG, "Obsolete bundled model loaded for session " + sessionId + ", closing it immediately.");
+                                DebugLog.d(TAG, "Obsolete bundled model loaded for session " + sessionId + ", closing it immediately.");
                                 try {
                                     loadedModel.close();
                                 } catch (Throwable e) {
-                                    Log.e(TAG, "Error closing obsolete bundled model", e);
+                                    DebugLog.e(TAG, "Error closing obsolete bundled model", e);
                                 }
                                 return;
                             }
                             this.model = loadedModel;
                             this.currentModelInfo = modelInfo;
                         }
-                        Log.d(TAG, "Bundled model initialized: " + modelInfo.getId());
+                        DebugLog.d(TAG, "Bundled model initialized: " + modelInfo.getId());
                         callback.onModelInitialized();
                     },
                     (exception) -> {
-                        Log.e(TAG, "Failed to unpack the model: " + exception.getMessage());
+                        DebugLog.e(TAG, "Failed to unpack the model: " + exception.getMessage());
                         synchronized (modelLock) {
                             if (sessionId == currentLoadSessionId) {
                                 callback.onError(exception.getMessage());
@@ -372,11 +372,11 @@ public class SubtitleGenerator {
 
                 synchronized (modelLock) {
                     if (sessionId != currentLoadSessionId) {
-                        Log.d(TAG, "Obsolete downloaded model loaded for session " + sessionId + ", closing it immediately.");
+                        DebugLog.d(TAG, "Obsolete downloaded model loaded for session " + sessionId + ", closing it immediately.");
                         try {
                             loadedModel.close();
                         } catch (Throwable e) {
-                            Log.e(TAG, "Error closing obsolete downloaded model", e);
+                            DebugLog.e(TAG, "Error closing obsolete downloaded model", e);
                         }
                         return;
                     }
@@ -384,10 +384,10 @@ public class SubtitleGenerator {
                     this.currentModelInfo = modelInfo;
                 }
 
-                Log.d(TAG, "Downloaded model initialized: " + modelInfo.getId());
+                DebugLog.d(TAG, "Downloaded model initialized: " + modelInfo.getId());
                 callback.onModelInitialized();
             } catch (Throwable e) {
-                Log.e(TAG, "Failed to load downloaded model", e);
+                DebugLog.e(TAG, "Failed to load downloaded model", e);
                 synchronized (modelLock) {
                     if (sessionId == currentLoadSessionId) {
                         callback.onError(e.getMessage() == null ? "Failed to load model" : e.getMessage());
@@ -441,10 +441,10 @@ public class SubtitleGenerator {
                     return;
                 }
                 isCancelled = false;
-                Log.d(TAG, "Starting subtitle generation process");
+                DebugLog.d(TAG, "Starting subtitle generation process");
                 callback.onProgressUpdate(PROGRESS_EXTRACTING_AUDIO);
 
-                Log.d(TAG, "Extracting audio from video");
+                DebugLog.d(TAG, "Extracting audio from video");
                 audioFile = extractAudioFromVideo(videoUri);
 
                 if (isCancelled) {
@@ -452,7 +452,7 @@ public class SubtitleGenerator {
                     return;
                 }
 
-                Log.d(TAG, "Performing speech recognition");
+                DebugLog.d(TAG, "Performing speech recognition");
                 callback.onProgressUpdate(PROGRESS_PREPARING_AUDIO);
                 List<SubtitleEntry> subtitleEntries = processAudioFile(audioFile, callback);
 
@@ -474,16 +474,16 @@ public class SubtitleGenerator {
                     try {
                         copyFile(audioFile, new File(permanentAudioPath));
                     } catch (Exception e) {
-                        Log.e(TAG, "Failed to copy audio permanently", e);
+                        DebugLog.e(TAG, "Failed to copy audio permanently", e);
                     }
                 }
 
                 callback.onProgressUpdate(100);
 
-                Log.d(TAG, "Subtitle generation completed");
+                DebugLog.d(TAG, "Subtitle generation completed");
                 callback.onSubtitlesGenerated(subtitleEntries);
             } catch (Exception e) {
-                Log.e(TAG, "Error generating subtitles", e);
+                DebugLog.e(TAG, "Error generating subtitles", e);
                 if (isCancelled) {
                     callback.onCancelled();
                 } else {
@@ -500,7 +500,7 @@ public class SubtitleGenerator {
         String inputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri);
         String command = String.format("-y -i %s -vn -acodec pcm_s16le -ar 16000 -ac 1 %s", inputPath, outputPath);
         
-        Log.d(TAG, "Executing FFmpeg command: " + command);
+        DebugLog.d(TAG, "Executing FFmpeg command: " + command);
 
         FFmpegSession session = FFmpegKit.execute(command);
 
@@ -508,7 +508,7 @@ public class SubtitleGenerator {
             return audioFile;
         } else {
             String errorMessage = session.getOutput() + "\n" + session.getLogsAsString();
-            Log.e(TAG, "FFmpeg error: " + errorMessage);
+            DebugLog.e(TAG, "FFmpeg error: " + errorMessage);
             throw new IOException("FFmpeg command failed with state " + session.getState() 
                 + " and rc " + session.getReturnCode() + ". Error: " + errorMessage);
         }
@@ -600,7 +600,7 @@ public class SubtitleGenerator {
                     List<WordTiming> singleWordList = new ArrayList<>();
                     singleWordList.add(timing);
                     if (VERBOSE_SUBTITLE_LOGS) {
-                        Log.d(TAG, "Vosk subtitle entry (word): startMs=" + (long)(wordStart * 1000) + ", endMs=" + (long)(wordEnd * 1000) + ", text=\"" + word + "\"");
+                        DebugLog.d(TAG, "Vosk subtitle entry (word): startMs=" + (long)(wordStart * 1000) + ", endMs=" + (long)(wordEnd * 1000) + ", text=\"" + word + "\"");
                     }
                     subtitles.add(new SubtitleEntry(subtitles.size() + 1,
                         formatTime((long)(wordStart * 1000)),
@@ -614,7 +614,7 @@ public class SubtitleGenerator {
                     
                     if (currentWords.size() >= maxWordsPerSubtitle) {
                         if (VERBOSE_SUBTITLE_LOGS) {
-                            Log.d(TAG, "Vosk subtitle entry: startMs=" + (long)(startTime * 1000) + ", endMs=" + (long)(endTime * 1000) + ", text=\"" + currentSubtitle.toString().trim() + "\"");
+                            DebugLog.d(TAG, "Vosk subtitle entry: startMs=" + (long)(startTime * 1000) + ", endMs=" + (long)(endTime * 1000) + ", text=\"" + currentSubtitle.toString().trim() + "\"");
                         }
                         subtitles.add(new SubtitleEntry(subtitles.size() + 1,
                             formatTime((long)(startTime * 1000)),
@@ -640,7 +640,7 @@ public class SubtitleGenerator {
 
             if (!wordByWordMode && currentSubtitle.length() > 0) {
                 if (VERBOSE_SUBTITLE_LOGS) {
-                    Log.d(TAG, "Vosk subtitle entry (final): startMs=" + (long)(startTime * 1000) + ", endMs=" + (long)(endTime * 1000) + ", text=\"" + currentSubtitle.toString().trim() + "\"");
+                    DebugLog.d(TAG, "Vosk subtitle entry (final): startMs=" + (long)(startTime * 1000) + ", endMs=" + (long)(endTime * 1000) + ", text=\"" + currentSubtitle.toString().trim() + "\"");
                 }
                 subtitles.add(new SubtitleEntry(subtitles.size() + 1,
                     formatTime((long)(startTime * 1000)),
@@ -649,7 +649,7 @@ public class SubtitleGenerator {
                     new ArrayList<>(currentWords)));
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error processing recognition result", e);
+            DebugLog.e(TAG, "Error processing recognition result", e);
         }
     }
 
@@ -659,9 +659,9 @@ public class SubtitleGenerator {
         }
         try {
             modelToRelease.close();
-            Log.d(TAG, "Released previous native speech model C++ memory allocation");
+            DebugLog.d(TAG, "Released previous native speech model C++ memory allocation");
         } catch (Throwable e) {
-            Log.e(TAG, "Error releasing previous model memory", e);
+            DebugLog.e(TAG, "Error releasing previous model memory", e);
         }
     }
 
@@ -672,9 +672,9 @@ public class SubtitleGenerator {
         try {
             contextToRelease.stopTranscription();
             contextToRelease.releaseAsync();
-            Log.d(TAG, "Queued previous Whisper model context for release");
+            DebugLog.d(TAG, "Queued previous Whisper model context for release");
         } catch (Throwable e) {
-            Log.e(TAG, "Error queueing previous Whisper model context release", e);
+            DebugLog.e(TAG, "Error queueing previous Whisper model context release", e);
         }
     }
 
@@ -1026,7 +1026,7 @@ public class SubtitleGenerator {
                 }
             }
         } catch (IOException e) {
-            Log.e(TAG, "Error copying fonts from assets", e);
+            DebugLog.e(TAG, "Error copying fonts from assets", e);
         }
     }
 
@@ -1133,7 +1133,7 @@ public class SubtitleGenerator {
                 String outputExtension = softAssExport ? "mkv" : "mp4";
                 String uniqueFileName = buildExportFileName((burnSubtitles ? "hard-" : "soft-") + subtitleLayerSlug(layerMode) + "-subtitles",
                         videoName, outputExtension);
-                Log.d(TAG,"File Name:" + uniqueFileName);
+                DebugLog.d(TAG,"File Name:" + uniqueFileName);
                 File outputFile = new File(exportDir, uniqueFileName);
                 if (outputFile.exists()) {
                     callback.onError("Already exported this video with this model: " + outputFile.getName());
@@ -1171,7 +1171,7 @@ public class SubtitleGenerator {
                             inputPath, subtitlePath, subtitleLanguage, outputPath);
                 }
 
-                Log.d(TAG, "Executing FFmpeg command: " + command);
+                DebugLog.d(TAG, "Executing FFmpeg command: " + command);
 
                 callback.onProgressUpdate(-1);
                 FFmpegSession session = FFmpegKit.execute(command);
@@ -1188,12 +1188,12 @@ public class SubtitleGenerator {
                     callback.onVideoExported(outputPath);
                 } else {
                     String errorMessage = session.getOutput() + "\n" + session.getLogsAsString();
-                    Log.e(TAG, "FFmpeg error: " + errorMessage);
+                    DebugLog.e(TAG, "FFmpeg error: " + errorMessage);
                     callback.onError("FFmpeg command failed: " + errorMessage);
                 }
 
             } catch (IOException e) {
-                Log.e(TAG, "Error exporting video with subtitles", e);
+                DebugLog.e(TAG, "Error exporting video with subtitles", e);
                 callback.onError("Error exporting video: " + e.getMessage());
             } finally {
                 if (subtitleFile != null && subtitleFile.exists()) {
@@ -1822,14 +1822,14 @@ public class SubtitleGenerator {
     }
 
     private void logSrtFileContents(File srtFile) {
-        Log.d(TAG, "SRT file contents:");
+        DebugLog.d(TAG, "SRT file contents:");
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(srtFile), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                Log.d(TAG, line);
+                DebugLog.d(TAG, line);
             }
         } catch (IOException e) {
-            Log.e(TAG, "Error reading SRT file", e);
+            DebugLog.e(TAG, "Error reading SRT file", e);
         }
     }
 
@@ -1844,7 +1844,7 @@ public class SubtitleGenerator {
                 }
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error getting video name", e);
+            DebugLog.e(TAG, "Error getting video name", e);
         }
         return fileName;
     }
@@ -2237,7 +2237,7 @@ public class SubtitleGenerator {
                         if ("auto".equals(activeLanguage)) {
                             activeLanguage = resolvedDetectedLanguage;
                         }
-                        Log.d(TAG, "Whisper transcription language for translation: " + resolvedDetectedLanguage);
+                        DebugLog.d(TAG, "Whisper transcription language for translation: " + resolvedDetectedLanguage);
                     }
 
                     processedSamples += audioData.length;
@@ -2245,7 +2245,7 @@ public class SubtitleGenerator {
             }
 
             long totalWallMs = System.currentTimeMillis() - whisperPipelineStartMs;
-            Log.i(TAG, "Whisper VAD disabled: whisperInput="
+            DebugLog.i(TAG, "Whisper VAD disabled: whisperInput="
                     + formatDurationForLog(samplesToMs(processedSamples))
                     + ", skipped=0:00.000 (0.0%)"
                     + ", whisperWall=" + whisperWallMs + "ms"
@@ -2264,7 +2264,7 @@ public class SubtitleGenerator {
         long speechSamples = sumSpeechWindowSamples(speechWindows);
         long skippedSamples = Math.max(0, totalSamples - speechSamples);
         double skippedPercent = totalSamples > 0 ? skippedSamples * 100.0 / totalSamples : 0.0;
-        Log.i(TAG, "Whisper VAD scan: model=" + activeVadModel
+        DebugLog.i(TAG, "Whisper VAD scan: model=" + activeVadModel
                 + ", aggressiveness=" + activeVadAggressiveness
                 + ", windows=" + speechWindows.size()
                 + ", batches=" + vadBatches.size()
@@ -2301,12 +2301,12 @@ public class SubtitleGenerator {
                 if ("auto".equals(activeLanguage)) {
                     activeLanguage = resolvedDetectedLanguage;
                 }
-                Log.d(TAG, "Whisper transcription language for translation: " + resolvedDetectedLanguage);
+                DebugLog.d(TAG, "Whisper transcription language for translation: " + resolvedDetectedLanguage);
             }
         }
 
         long totalWallMs = System.currentTimeMillis() - whisperPipelineStartMs;
-        Log.i(TAG, "Whisper VAD result: model=" + activeVadModel
+        DebugLog.i(TAG, "Whisper VAD result: model=" + activeVadModel
                 + ", aggressiveness=" + activeVadAggressiveness
                 + ", whisperInput="
                 + formatDurationForLog(samplesToMs(whisperInputSamples))
@@ -2480,7 +2480,7 @@ public class SubtitleGenerator {
             try {
                 vad.close();
             } catch (Throwable e) {
-                Log.w(TAG, "Error closing WebRTC VAD", e);
+                DebugLog.w(TAG, "Error closing WebRTC VAD", e);
             }
         }
 
@@ -2550,7 +2550,7 @@ public class SubtitleGenerator {
             try {
                 vad.close();
             } catch (Throwable e) {
-                Log.w(TAG, "Error closing Silero VAD", e);
+                DebugLog.w(TAG, "Error closing Silero VAD", e);
             }
         }
 
@@ -2684,7 +2684,7 @@ public class SubtitleGenerator {
             @Override
             public void onNewSegment(long startMs, long endMs, String text, String tokenTimingsJson) {
                 if (VERBOSE_SUBTITLE_LOGS) {
-                    Log.d(TAG, "onNewSegment callback: segmentStartUnits=" + startMs + ", segmentEndUnits=" + endMs
+                    DebugLog.d(TAG, "onNewSegment callback: segmentStartUnits=" + startMs + ", segmentEndUnits=" + endMs
                             + ", tokenTimings=" + (tokenTimingsJson == null ? 0 : tokenTimingsJson.length())
                             + ", text=\"" + text + "\"");
                 }
@@ -2693,7 +2693,7 @@ public class SubtitleGenerator {
                     return;
                 }
                 if (suppressWhisperSdh && isWhisperSdhCaption(displayText)) {
-                    Log.d(TAG, "Skipping Whisper SDH caption: \"" + displayText.trim() + "\"");
+                    DebugLog.d(TAG, "Skipping Whisper SDH caption: \"" + displayText.trim() + "\"");
                     return;
                 }
                 long compactSegmentStartMs = startMs * 10;
@@ -2702,7 +2702,7 @@ public class SubtitleGenerator {
                         tokenTimingsJson, chunkOffsetMs, timeMapper,
                         compactSegmentStartMs, compactSegmentEndMs, displayText);
                 if (VERBOSE_SUBTITLE_LOGS && !timedWords.isEmpty()) {
-                    Log.d(TAG, "Whisper word timing range: startMs=" + timedWords.get(0).getStartMs()
+                    DebugLog.d(TAG, "Whisper word timing range: startMs=" + timedWords.get(0).getStartMs()
                             + ", endMs=" + timedWords.get(timedWords.size() - 1).getEndMs()
                             + ", words=" + timedWords.size());
                 }
@@ -2817,7 +2817,7 @@ public class SubtitleGenerator {
             addCurrentWhisperWord(words, currentWord, currentStartMs, currentEndMs,
                     confidenceSum, confidenceCount);
         } catch (Exception e) {
-            Log.e(TAG, "Error parsing Whisper token timings", e);
+            DebugLog.e(TAG, "Error parsing Whisper token timings", e);
             words.clear();
         }
 

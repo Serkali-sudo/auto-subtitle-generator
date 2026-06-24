@@ -47,6 +47,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.serhat.autosub.R;
+import com.serhat.autosub.core.DebugLog;
 import com.serhat.autosub.databinding.FragmentPreviewBinding;
 import com.serhat.autosub.exports.ExportFileActions;
 import com.serhat.autosub.exports.ExportFolderDialog;
@@ -80,7 +81,7 @@ public class PreviewFragment extends Fragment implements ActionMode.Callback {
                     try {
                         requireContext().getContentResolver().takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     } catch (Exception e) {
-                        android.util.Log.e("PreviewFragment", "Failed to take persistable URI permission", e);
+                        DebugLog.e("PreviewFragment", "Failed to take persistable URI permission", e);
                     }
                     QueueItem selectedItem = viewModel.getSelectedQueueItem().getValue();
                     if (selectedItem != null) {

@@ -13,7 +13,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
-import android.util.Log;
+import com.serhat.autosub.core.DebugLog;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -548,7 +548,7 @@ public class AutoSubTaskService extends Service {
         int previousProgress = item.getProgress();
         String previousMessage = item.getMessage();
         shortsAnalyzing = true;
-        Log.i(SHORTS_TAG, "Service analysis requested: queueItemId=" + item.getId() +
+        DebugLog.i(SHORTS_TAG, "Service analysis requested: queueItemId=" + item.getId() +
                 ", subtitleEntries=" + item.getSubtitles().size() + ", requestedClips=" + desiredCount +
                 ", durationRange=" + minSeconds + "-" + maxSeconds + "s, focusProvided=" +
                 (focusPrompt != null && !focusPrompt.trim().isEmpty()) +
@@ -593,7 +593,7 @@ public class AutoSubTaskService extends Service {
                 shortsProjectStore.save(project);
                 if (candidates.isEmpty()) error = "Gemma did not return any valid clips";
             } catch (Throwable e) {
-                Log.e(SHORTS_TAG, "Service analysis failed: " + e.getMessage(), e);
+                DebugLog.e(SHORTS_TAG, "Service analysis failed: " + e.getMessage(), e);
                 error = e.getMessage() == null ? "Shorts analysis failed" : e.getMessage();
             } finally {
                 if (activeShortsEngine != null) activeShortsEngine.close();
@@ -602,7 +602,7 @@ public class AutoSubTaskService extends Service {
             ShortsProject finalProject = project;
             String finalError = error;
             handler.post(() -> {
-                Log.i(SHORTS_TAG, "Service analysis finished: candidates=" +
+                DebugLog.i(SHORTS_TAG, "Service analysis finished: candidates=" +
                         (finalProject == null ? 0 : finalProject.getCandidates().size()) +
                         ", error=" + (finalError.isEmpty() ? "none" : finalError));
                 item.setStatus(previousStatus);

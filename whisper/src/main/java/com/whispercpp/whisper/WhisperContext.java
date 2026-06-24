@@ -3,7 +3,8 @@ package com.whispercpp.whisper;
 import android.content.res.AssetManager;
 import android.content.Context;
 import android.os.Build;
-import android.util.Log;
+import com.whispercpp.DebugLog;
+import com.whispercpp.BuildConfig;
 
 import java.io.File;
 import java.io.InputStream;
@@ -79,7 +80,7 @@ public class WhisperContext {
                     runFullTranscribe(data, language, maxSegmentLength, suppressNonSpeechTokens, callback);
                     return buildTranscriptionText(printTimestamp);
                 } catch (Exception e) {
-                    Log.e(LOG_TAG, "Error during transcription", e);
+                    DebugLog.e(LOG_TAG, "Error during transcription", e);
                     return "";
                 }
             }
@@ -99,7 +100,7 @@ public class WhisperContext {
                 try {
                     runFullTranscribe(data, language, maxSegmentLength, suppressNonSpeechTokens, callback);
                 } catch (Exception e) {
-                    Log.e(LOG_TAG, "Error during transcription", e);
+                    DebugLog.e(LOG_TAG, "Error during transcription", e);
                 }
                 return null;
             }
@@ -118,7 +119,7 @@ public class WhisperContext {
         }
 
         int numThreads = WhisperCpuConfig.getPreferredThreadCount();
-        Log.d(LOG_TAG, "Selecting " + numThreads + " threads");
+        DebugLog.d(LOG_TAG, "Selecting " + numThreads + " threads");
 
         detectedLanguage = null;
         long startMs = System.currentTimeMillis();
@@ -139,7 +140,7 @@ public class WhisperContext {
         double audioSeconds = audioSamples / 16000.0;
         double wallSeconds = wallMs / 1000.0;
         double realtimeFactor = wallSeconds / audioSeconds;
-        Log.i(LOG_TAG, String.format(Locale.US,
+        DebugLog.i(LOG_TAG, String.format(Locale.US,
                 "Whisper profile: threads=%d, audio=%.2fs, wall=%.2fs, realtimeFactor=%.2fx",
                 numThreads, audioSeconds, wallSeconds, realtimeFactor));
     }
@@ -225,7 +226,7 @@ public class WhisperContext {
                 freeContextOnCurrentThread();
             }
         } catch (RuntimeException e) {
-            Log.w(LOG_TAG, "Executor rejected Whisper release; freeing context directly", e);
+            DebugLog.w(LOG_TAG, "Executor rejected Whisper release; freeing context directly", e);
             freeContextOnCurrentThread();
         } finally {
             executor.shutdown();
@@ -342,7 +343,7 @@ class WhisperLib {
         private static String loadedLibraryName = "unknown";
 
         static {
-            Log.d(LOG_TAG, "Primary ABI: " + Build.SUPPORTED_ABIS[0]);
+            DebugLog.d(LOG_TAG, "Primary ABI: " + Build.SUPPORTED_ABIS[0]);
 
             boolean loadVfpv4 = false;
             boolean loadV8fp16 = false;
@@ -353,10 +354,10 @@ class WhisperLib {
                 String cpuInfo = cpuInfo();
 
                 if (cpuInfo != null) {
-                    Log.d(LOG_TAG, "CPU info: " + cpuInfo);
+                    DebugLog.d(LOG_TAG, "CPU info: " + cpuInfo);
 
                     if (hasCpuFeature(cpuInfo, "vfpv4")) {
-                        Log.d(LOG_TAG, "CPU supports vfpv4");
+                        DebugLog.d(LOG_TAG, "CPU supports vfpv4");
                         loadVfpv4 = true;
                     }
                 }
@@ -366,19 +367,19 @@ class WhisperLib {
                 String cpuInfo = cpuInfo();
 
                 if (cpuInfo != null) {
-                    Log.d(LOG_TAG, "CPU info: " + cpuInfo);
+                    DebugLog.d(LOG_TAG, "CPU info: " + cpuInfo);
 
                     boolean supportsFp16Arithmetic = hasCpuFeature(cpuInfo, "fphp");
                     boolean supportsDotprod = hasCpuFeature(cpuInfo, "asimddp")
                             || hasCpuFeature(cpuInfo, "dotprod");
 
                     if (supportsFp16Arithmetic) {
-                        Log.d(LOG_TAG, "CPU supports fp16 arithmetic");
+                        DebugLog.d(LOG_TAG, "CPU supports fp16 arithmetic");
                         loadV8fp16 = true;
                     }
 
                     if (supportsFp16Arithmetic && supportsDotprod) {
-                        Log.d(LOG_TAG, "CPU supports fp16 arithmetic + dotprod");
+                        DebugLog.d(LOG_TAG, "CPU supports fp16 arithmetic + dotprod");
                         loadV8fp16Dotprod = true;
                     }
                 }
@@ -392,6 +393,7 @@ class WhisperLib {
             if (!loaded) {
                 throw new UnsatisfiedLinkError("Unable to load any Whisper native library");
             }
+            setDebugLogging(BuildConfig.DEBUG);
         }
 
         private Companion() {
@@ -402,6 +404,8 @@ class WhisperLib {
         }
 
         // JNI methods
+        public static native void setDebugLogging(boolean enabled);
+
         public native long initContextFromInputStream(InputStream inputStream);
 
         public native long initContextFromAsset(AssetManager assetManager, String assetPath);
@@ -450,12 +454,12 @@ class WhisperLib {
 
         private static boolean tryLoadLibrary(String libraryName) {
             try {
-                Log.d(LOG_TAG, "Loading lib" + libraryName + ".so");
+                DebugLog.d(LOG_TAG, "Loading lib" + libraryName + ".so");
                 System.loadLibrary(libraryName);
                 loadedLibraryName = libraryName;
                 return true;
             } catch (UnsatisfiedLinkError e) {
-                Log.w(LOG_TAG, "Couldn't load lib" + libraryName + ".so", e);
+                DebugLog.w(LOG_TAG, "Couldn't load lib" + libraryName + ".so", e);
                 return false;
             }
         }
@@ -488,7 +492,7 @@ class WhisperLib {
                 }
 
             } catch (Exception e) {
-                Log.w(LOG_TAG, "Couldn't read /proc/cpuinfo", e);
+                DebugLog.w(LOG_TAG, "Couldn't read /proc/cpuinfo", e);
                 return null;
             }
         }

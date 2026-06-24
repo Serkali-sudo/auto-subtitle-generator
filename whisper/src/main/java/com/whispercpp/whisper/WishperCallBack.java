@@ -2,20 +2,22 @@ package com.whispercpp.whisper;
 
 import androidx.annotation.Keep;
 
+import com.whispercpp.DebugLog;
+
 @Keep
 public class WishperCallBack implements WhisperCallback {
     @Override
     public void onNewSegment(long startMs, long endMs, String text, String tokenTimingsJson) {
-        System.out.println(text);
+        DebugLog.d("LibWhisper", text);
     }
 
     @Override
     public void onProgress(int progress) {
-        System.out.println(progress);
+        DebugLog.d("LibWhisper", String.valueOf(progress));
     }
 
     @Override
     public void onComplete() {
-        System.out.println("Completed");
+        DebugLog.d("LibWhisper", "Completed");
     }
 }

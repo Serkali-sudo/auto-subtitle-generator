@@ -2,7 +2,7 @@ package com.serhat.autosub.shorts
 
 import android.content.Context
 import android.os.Debug
-import android.util.Log
+import com.serhat.autosub.core.DebugLog
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
@@ -38,7 +38,7 @@ class LiteRtShortsLlmEngine(
     override fun initialize(modelFile: File, maxContextTokens: Int) {
         this.maxContextTokens = maxContextTokens
         val startedAt = System.currentTimeMillis()
-        Log.i(TAG, "Engine initialization started: fileBytes=${modelFile.length()}, " +
+        DebugLog.i(TAG, "Engine initialization started: fileBytes=${modelFile.length()}, " +
             "preferredBackend=${if (preferGpu) "GPU" else "CPU"}, maxContextTokens=$maxContextTokens")
         close()
         if (!preferGpu) {
@@ -52,7 +52,7 @@ class LiteRtShortsLlmEngine(
             )
             engine = Engine(cpuConfig).also { it.initialize() }
             backendLabel = "CPU"
-            Log.i(TAG, "Engine initialized directly on CPU in ${System.currentTimeMillis() - startedAt}ms")
+            DebugLog.i(TAG, "Engine initialized directly on CPU in ${System.currentTimeMillis() - startedAt}ms")
             return
         }
         val config = EngineConfig(
@@ -67,9 +67,9 @@ class LiteRtShortsLlmEngine(
         try {
             engine = Engine(config).also { it.initialize() }
             backendLabel = "GPU"
-            Log.i(TAG, "Engine initialized on GPU in ${System.currentTimeMillis() - startedAt}ms")
+            DebugLog.i(TAG, "Engine initialized on GPU in ${System.currentTimeMillis() - startedAt}ms")
         } catch (gpuError: Throwable) {
-            Log.w(TAG, "GPU initialization failed after ${System.currentTimeMillis() - startedAt}ms; retrying on CPU: ${gpuError.message}")
+            DebugLog.w(TAG, "GPU initialization failed after ${System.currentTimeMillis() - startedAt}ms; retrying on CPU: ${gpuError.message}")
             engine?.close()
             val cpuConfig = EngineConfig(
                 modelPath = modelFile.absolutePath,
@@ -81,7 +81,7 @@ class LiteRtShortsLlmEngine(
             )
             engine = Engine(cpuConfig).also { it.initialize() }
             backendLabel = "CPU"
-            Log.i(TAG, "Engine initialized on CPU in ${System.currentTimeMillis() - startedAt}ms total")
+            DebugLog.i(TAG, "Engine initialized on CPU in ${System.currentTimeMillis() - startedAt}ms total")
         }
     }
 
@@ -97,7 +97,7 @@ class LiteRtShortsLlmEngine(
         val activeEngine = engine ?: error("Gemma engine is not initialized")
         val startedAt = System.currentTimeMillis()
         val estimatedInputTokens = (prompt.toByteArray(Charsets.UTF_8).size + 2) / 3
-        Log.i(TAG, "Inference started: backend=$backendLabel, thinking=$thinkingEnabled, promptChars=${prompt.length}, estimatedInputTokens=$estimatedInputTokens, systemChars=${systemInstruction.length}")
+        DebugLog.i(TAG, "Inference started: backend=$backendLabel, thinking=$thinkingEnabled, promptChars=${prompt.length}, estimatedInputTokens=$estimatedInputTokens, systemChars=${systemInstruction.length}")
         val phase = AtomicReference("closing previous conversation")
         val firstTokenSeen = AtomicBoolean(false)
         val cancelledIntentionally = AtomicBoolean(false)
@@ -120,9 +120,9 @@ class LiteRtShortsLlmEngine(
                 "processCpuMs=${processCpuMs - initialProcessCpuMs}, cpuMsLast5s=$cpuDeltaMs, callbacks=${messageCount.get()}, " +
                 "outputChars=${outputChars.get()}, javaHeapMb=$javaUsedMb, nativeHeapMb=$nativeUsedMb"
             if (!firstTokenSeen.get() && heartbeat % 6 == 0) {
-                Log.w(TAG, "$message; CPU prefill can take several minutes for long prompts")
+                DebugLog.w(TAG, "$message; CPU prefill can take several minutes for long prompts")
             } else {
-                Log.i(TAG, message)
+                DebugLog.i(TAG, message)
             }
         }, 5, 5, TimeUnit.SECONDS)
 
@@ -138,7 +138,7 @@ class LiteRtShortsLlmEngine(
             )
         } catch (throwable: Throwable) {
             watchdog.shutdownNow()
-            Log.e(TAG, "Conversation creation failed after ${System.currentTimeMillis() - startedAt}ms: ${throwable.message}", throwable)
+            DebugLog.e(TAG, "Conversation creation failed after ${System.currentTimeMillis() - startedAt}ms: ${throwable.message}", throwable)
             throw throwable
         }
         conversation = current
@@ -162,14 +162,14 @@ class LiteRtShortsLlmEngine(
                         val now = System.currentTimeMillis()
                         if (firstTokenSeen.compareAndSet(false, true)) {
                             phase.set("generating output")
-                            Log.i(TAG, "First output token received after ${now - startedAt}ms (prefill complete)")
+                            DebugLog.i(TAG, "First output token received after ${now - startedAt}ms (prefill complete)")
                         }
                         if (now - lastProgressLogAt.get() >= 2_000 && lastProgressLogAt.compareAndSet(lastProgressLogAt.get(), now)) {
-                            Log.i(TAG, "Inference generating: elapsedMs=${now - startedAt}, callbacks=$callbacks, outputChars=$length")
+                            DebugLog.i(TAG, "Inference generating: elapsedMs=${now - startedAt}, callbacks=$callbacks, outputChars=$length")
                         }
                         if (callbacks > 1200 || length > 5000) {
                             if (cancelledIntentionally.compareAndSet(false, true)) {
-                                Log.w(TAG, "Inference output limit exceeded (callbacks=$callbacks, chars=$length); cancelling process to prevent infinite loop.")
+                                DebugLog.w(TAG, "Inference output limit exceeded (callbacks=$callbacks, chars=$length); cancelling process to prevent infinite loop.")
                                 current.cancelProcess()
                             }
                         }
@@ -177,7 +177,7 @@ class LiteRtShortsLlmEngine(
 
                     override fun onDone() {
                         phase.set("completed")
-                        Log.i(TAG, "Inference completed: elapsedMs=${System.currentTimeMillis() - startedAt}, callbacks=${messageCount.get()}, outputChars=${outputChars.get()}")
+                        DebugLog.i(TAG, "Inference completed: elapsedMs=${System.currentTimeMillis() - startedAt}, callbacks=${messageCount.get()}, outputChars=${outputChars.get()}")
                         latch.countDown()
                     }
 
@@ -185,10 +185,10 @@ class LiteRtShortsLlmEngine(
                         phase.set("failed")
                         if (cancelledIntentionally.get()) {
                             val limitExceeded = IllegalStateException("Gemma output limit exceeded (possible loop)", throwable)
-                            Log.e(TAG, "Inference cancelled intentionally: limit exceeded", limitExceeded)
+                            DebugLog.e(TAG, "Inference cancelled intentionally: limit exceeded", limitExceeded)
                             failure.set(limitExceeded)
                         } else {
-                            Log.e(TAG, "Inference failed after ${System.currentTimeMillis() - startedAt}ms: ${throwable.message}", throwable)
+                            DebugLog.e(TAG, "Inference failed after ${System.currentTimeMillis() - startedAt}ms: ${throwable.message}", throwable)
                             failure.set(throwable)
                         }
                         latch.countDown()
@@ -199,7 +199,7 @@ class LiteRtShortsLlmEngine(
             if (latch.count > 0 && !firstTokenSeen.get()) phase.set("native prefill / waiting for first token")
             if (!latch.await(5, TimeUnit.MINUTES)) {
                 phase.set("timed out")
-                Log.e(TAG, "Inference timed out after ${System.currentTimeMillis() - startedAt}ms")
+                DebugLog.e(TAG, "Inference timed out after ${System.currentTimeMillis() - startedAt}ms")
                 current.cancelProcess()
                 throw IllegalStateException("Gemma response timed out")
             }
@@ -211,12 +211,12 @@ class LiteRtShortsLlmEngine(
     }
 
     override fun cancel() {
-        Log.i(TAG, "Inference cancellation requested")
+        DebugLog.i(TAG, "Inference cancellation requested")
         conversation?.cancelProcess()
     }
 
     override fun close() {
-        if (engine != null || conversation != null) Log.i(TAG, "Closing Gemma engine and conversation")
+        if (engine != null || conversation != null) DebugLog.i(TAG, "Closing Gemma engine and conversation")
         try { conversation?.close() } catch (_: Throwable) {}
         conversation = null
         try { engine?.close() } catch (_: Throwable) {}

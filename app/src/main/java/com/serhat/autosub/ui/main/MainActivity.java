@@ -27,6 +27,7 @@ import androidx.fragment.app.FragmentManager;
 import androidx.lifecycle.ViewModelProvider;
 
 import com.serhat.autosub.R;
+import com.serhat.autosub.core.DebugLog;
 import com.serhat.autosub.databinding.ActivityMainBinding;
 import com.serhat.autosub.exports.ExportsFragment;
 import com.serhat.autosub.models.ModelsFragment;
@@ -54,7 +55,7 @@ public class MainActivity extends AppCompatActivity {
                         try {
                             getContentResolver().takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                         } catch (Exception e) {
-                            android.util.Log.e("MainActivity", "Failed to take persistable URI permission", e);
+                            DebugLog.e("MainActivity", "Failed to take persistable URI permission", e);
                         }
                     }
                     addVideosToQueue(uris);
