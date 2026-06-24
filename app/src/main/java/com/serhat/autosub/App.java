@@ -1,5 +1,7 @@
 package com.serhat.autosub;
 
+import com.serhat.autosub.core.NotificationHelper;
+
 import android.app.Application;
 import android.app.Activity;
 import android.os.Bundle;

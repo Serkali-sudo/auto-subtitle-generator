@@ -44,11 +44,11 @@
             android:required="false" />
 
         <service
-            android:name=".ModelLoadProbeService"
+            android:name=".service.ModelLoadProbeService"
             android:exported="false"
             android:process=":modelprobe" />
         <service
-            android:name=".AutoSubTaskService"
+            android:name=".service.AutoSubTaskService"
             android:exported="false"
             android:foregroundServiceType="mediaProcessing|dataSync" />
 
@@ -63,7 +63,7 @@
         </provider>
 
         <activity
-            android:name=".MainActivity"
+            android:name=".ui.main.MainActivity"
             android:screenOrientation="sensorPortrait"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true">
