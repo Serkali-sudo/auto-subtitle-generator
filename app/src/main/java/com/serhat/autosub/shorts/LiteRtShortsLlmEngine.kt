@@ -48,7 +48,7 @@ class LiteRtShortsLlmEngine(
                 visionBackend = null,
                 audioBackend = null,
                 maxNumTokens = maxContextTokens,
-                cacheDir = context.externalCacheDir?.absolutePath,
+                cacheDir = context.cacheDir.absolutePath,
             )
             engine = Engine(cpuConfig).also { it.initialize() }
             backendLabel = "CPU"
@@ -62,7 +62,7 @@ class LiteRtShortsLlmEngine(
             audioBackend = null,
             // Keep the mobile KV cache bounded. Longer transcripts are chunked by the analyzer.
             maxNumTokens = maxContextTokens,
-            cacheDir = context.externalCacheDir?.absolutePath,
+            cacheDir = context.cacheDir.absolutePath,
         )
         try {
             engine = Engine(config).also { it.initialize() }
@@ -77,7 +77,7 @@ class LiteRtShortsLlmEngine(
                 visionBackend = null,
                 audioBackend = null,
                 maxNumTokens = maxContextTokens,
-                cacheDir = context.externalCacheDir?.absolutePath,
+                cacheDir = context.cacheDir.absolutePath,
             )
             engine = Engine(cpuConfig).also { it.initialize() }
             backendLabel = "CPU"

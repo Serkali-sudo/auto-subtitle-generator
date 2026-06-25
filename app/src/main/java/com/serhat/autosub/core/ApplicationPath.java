@@ -1,14 +1,6 @@
 package com.serhat.autosub.core;
 
-
-
-import android.Manifest;
 import android.content.Context;
-import android.content.pm.PackageManager;
-import android.os.Build;
-import android.os.Environment;
-
-import androidx.core.app.ActivityCompat;
 
 import com.serhat.autosub.exports.ExportSettings;
 
@@ -21,50 +13,10 @@ public class ApplicationPath {
         if (exportRoot.isDirectory() || exportRoot.mkdirs()) {
             return exportRoot.getPath();
         }
-        return lastResort("exports", context);
+        return privateExportRoot(context).getPath();
     }
 
-    public static String getQuantumPath(String folderName, String dir, Context context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            File result = new File(Environment.getExternalStoragePublicDirectory(dir),
-                    folderName);
-            if (result.isDirectory() || result.mkdirs()) {
-                return result.getPath();
-            } else {
-                File orig_file = Environment.getExternalStoragePublicDirectory(dir);
-                if (orig_file.isDirectory() || orig_file.mkdirs()) {
-                    return orig_file.getPath();
-                } else {
-                    return lastResort(folderName, context);
-                }
-            }
-        } else {
-            if (isStoragePermissionGranted(context)) {
-                File result = new File(Environment.getExternalStoragePublicDirectory(dir),
-                        folderName);
-                if (result.isDirectory() || result.mkdirs()) {
-                    return result.getPath();
-                } else {
-                    File orig_file = Environment.getExternalStoragePublicDirectory(dir);
-                    if (orig_file.isDirectory() || orig_file.mkdirs()) {
-                        return orig_file.getPath();
-                    } else {
-                        return lastResort(folderName, context);
-                    }
-                }
-            } else {
-                return lastResort(folderName, context);
-            }
-        }
+    private static File privateExportRoot(Context context) {
+        return new File(context.getFilesDir(), "exports");
     }
-
-    public static boolean isStoragePermissionGranted(Context context) {
-        return ActivityCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
-    }
-
-    public static String lastResort(String filePath, Context context) {
-        return context.getExternalFilesDir(filePath).getPath();
-    }
-
-
 }

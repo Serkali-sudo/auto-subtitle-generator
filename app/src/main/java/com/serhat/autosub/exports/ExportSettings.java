@@ -40,7 +40,7 @@ public final class ExportSettings {
                 "Choose where AutoSub should save exported videos and subtitles.",
                 new AppOptionDialog.Option[]{
                         new AppOptionDialog.Option(R.drawable.ri_folder_settings_line,
-                                "App folder", "Keeps exports out of gallery apps. Files are deleted if AutoSub is uninstalled."),
+                                "Private app folder", "Keeps exports private and out of gallery apps. Files are deleted if AutoSub is uninstalled."),
                         new AppOptionDialog.Option(R.drawable.ri_folder_open_line,
                                 "Movies folder", "Saves to Movies/AutoSub so files are easy to find outside the app.")
                 }, which -> {
@@ -68,8 +68,7 @@ public final class ExportSettings {
         if (MODE_PUBLIC.equals(getMode(context))) {
             return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "AutoSub");
         }
-        File dir = context.getExternalFilesDir("exports");
-        return dir == null ? new File(context.getFilesDir(), "exports") : dir;
+        return new File(context.getFilesDir(), "exports");
     }
 
     private static android.content.SharedPreferences prefs(Context context) {

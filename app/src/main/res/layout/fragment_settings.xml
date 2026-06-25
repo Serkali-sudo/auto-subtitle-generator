@@ -231,7 +231,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
                 android:alpha="0.75"
-                android:text="App folder keeps exports out of gallery apps, but files are deleted if AutoSub is uninstalled."
+                android:text="Private keeps exports out of gallery apps and deletes them if AutoSub is uninstalled. Movies saves to Movies/AutoSub for files you want to keep or share."
                 android:textSize="13sp" />
 
             <com.google.android.material.button.MaterialButtonToggleGroup
@@ -248,7 +248,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="App" />
+                    android:text="Private" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/exportPublicBT"
