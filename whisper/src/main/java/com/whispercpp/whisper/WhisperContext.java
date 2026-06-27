@@ -348,6 +348,7 @@ class WhisperLib {
             boolean loadVfpv4 = false;
             boolean loadV8fp16 = false;
             boolean loadV8fp16Dotprod = false;
+            boolean loadV8fp16DotprodI8mm = false;
 
             if (isArmEabiV7a()) {
                 // armeabi-v7a needs runtime detection support
@@ -372,6 +373,8 @@ class WhisperLib {
                     boolean supportsFp16Arithmetic = hasCpuFeature(cpuInfo, "fphp");
                     boolean supportsDotprod = hasCpuFeature(cpuInfo, "asimddp")
                             || hasCpuFeature(cpuInfo, "dotprod");
+                    boolean supportsI8mm = hasCpuFeature(cpuInfo, "i8mm")
+                            || hasCpuFeature(cpuInfo, "asimdi8mm");
 
                     if (supportsFp16Arithmetic) {
                         DebugLog.d(LOG_TAG, "CPU supports fp16 arithmetic");
@@ -382,10 +385,16 @@ class WhisperLib {
                         DebugLog.d(LOG_TAG, "CPU supports fp16 arithmetic + dotprod");
                         loadV8fp16Dotprod = true;
                     }
+
+                    if (supportsFp16Arithmetic && supportsDotprod && supportsI8mm) {
+                        DebugLog.d(LOG_TAG, "CPU supports fp16 arithmetic + dotprod + i8mm");
+                        loadV8fp16DotprodI8mm = true;
+                    }
                 }
             }
 
             boolean loaded = loadVfpv4 && tryLoadLibrary("whisper_vfpv4");
+            loaded = loaded || (loadV8fp16DotprodI8mm && tryLoadLibrary("whisper_v8fp16_dotprod_i8mm_va"));
             loaded = loaded || (loadV8fp16Dotprod && tryLoadLibrary("whisper_v8fp16_dotprod_va"));
             loaded = loaded || (loadV8fp16 && tryLoadLibrary("whisper_v8fp16_va"));
             loaded = loaded || tryLoadLibrary("whisper");

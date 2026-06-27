@@ -9,6 +9,8 @@ project(whisper.cpp)
 set(CMAKE_CXX_STANDARD 17)
 set(WHISPER_LIB_DIR ${CMAKE_SOURCE_DIR}/..)
 
+include(CheckCXXCompilerFlag)
+
 # Remove file paths from debug info
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
@@ -21,39 +23,31 @@ add_definitions(-DGGML_NO_TIMESTAMPS=1)
 # 16KB Page Size Support: Add NDK r27 flexible page size compilation flag
 add_definitions(-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON)
 
-# Path to external GGML, otherwise uses the copy in whisper.cpp.
-option(GGML_HOME "whisper: Path to external GGML source" OFF)
-
 set(
         SOURCE_FILES
         ${WHISPER_LIB_DIR}/src/whisper.cpp
         ${CMAKE_SOURCE_DIR}/jni.c
 )
 
-# TODO: this needs to be updated to work with the new ggml CMakeLists
-
-if (NOT GGML_HOME)
-    set(
-            SOURCE_FILES
-            ${SOURCE_FILES}
-            ${WHISPER_LIB_DIR}/ggml/src/ggml.c
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-alloc.c
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-backend.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-backend-reg.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-quants.c
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-threading.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu.c
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu-aarch64.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu-hbm.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu-quants.c
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu-traits.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/unary-ops.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/binary-ops.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/vec.cpp
-            ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ops.cpp
-    )
-endif()
+set(
+        SOURCE_FILES
+        ${SOURCE_FILES}
+        ${WHISPER_LIB_DIR}/ggml/src/ggml.c
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-alloc.c
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-backend.cpp
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-backend-reg.cpp
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-quants.c
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-threading.cpp
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu.c
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu.cpp
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu-aarch64.cpp
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu-quants.c
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ggml-cpu-traits.cpp
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/unary-ops.cpp
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/binary-ops.cpp
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/vec.cpp
+        ${WHISPER_LIB_DIR}/ggml/src/ggml-cpu/ops.cpp
+)
 
 find_library(LOG_LIB log)
 
@@ -66,7 +60,14 @@ function(build_library target_name)
 
     target_compile_definitions(${target_name} PUBLIC GGML_USE_CPU)
 
-    if (${target_name} STREQUAL "whisper_v8fp16_dotprod_va")
+    if (${ANDROID_ABI} STREQUAL "arm64-v8a")
+        target_compile_definitions(${target_name} PUBLIC GGML_USE_CPU_AARCH64)
+    endif ()
+
+    if (${target_name} STREQUAL "whisper_v8fp16_dotprod_i8mm_va")
+        target_compile_options(${target_name} PRIVATE -march=armv8.2-a+fp16+dotprod+i8mm)
+        set(GGML_COMPILE_OPTIONS                      -march=armv8.2-a+fp16+dotprod+i8mm)
+    elseif (${target_name} STREQUAL "whisper_v8fp16_dotprod_va")
         target_compile_options(${target_name} PRIVATE -march=armv8.2-a+fp16+dotprod)
         set(GGML_COMPILE_OPTIONS                      -march=armv8.2-a+fp16+dotprod)
     elseif (${target_name} STREQUAL "whisper_v8fp16_va")
@@ -89,17 +90,7 @@ function(build_library target_name)
         target_link_options(${target_name} PRIVATE -Wl,-z,max-page-size=16384)
     endif ()
 
-    if (GGML_HOME)
-        include(FetchContent)
-        FetchContent_Declare(ggml SOURCE_DIR ${GGML_HOME})
-        FetchContent_MakeAvailable(ggml)
-
-        target_compile_options(ggml PRIVATE ${GGML_COMPILE_OPTIONS})
-        target_compile_definitions(ggml PRIVATE GGML_NO_TIMESTAMPS=1)
-        target_link_libraries(${target_name} ${LOG_LIB} android ggml)
-    else()
-        target_link_libraries(${target_name} ${LOG_LIB} android)
-    endif()
+    target_link_libraries(${target_name} ${LOG_LIB} android)
 
     # Strip .comment section for reproducible builds
     add_custom_command(TARGET ${target_name} POST_BUILD
@@ -110,6 +101,12 @@ function(build_library target_name)
 endfunction()
 
 if (${ANDROID_ABI} STREQUAL "arm64-v8a")
+    check_cxx_compiler_flag("-march=armv8.2-a+fp16+dotprod+i8mm" WHISPER_HAS_ARM64_I8MM_FLAG)
+    if (WHISPER_HAS_ARM64_I8MM_FLAG)
+        build_library("whisper_v8fp16_dotprod_i8mm_va")
+    else ()
+        message(STATUS "Skipping whisper_v8fp16_dotprod_i8mm_va: compiler does not support -march=armv8.2-a+fp16+dotprod+i8mm")
+    endif ()
     build_library("whisper_v8fp16_dotprod_va")
     build_library("whisper_v8fp16_va")
 elseif (${ANDROID_ABI} STREQUAL "armeabi-v7a")
