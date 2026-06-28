@@ -234,6 +234,7 @@ On Android 13 and newer, notification permission affects optional completion/pro
 - [ML Kit Translation](https://developers.google.com/ml-kit/language/translation) for on-device subtitle translation.
 - [FFmpeg Kit](https://github.com/arthenica/ffmpeg-kit/tree/main/android) for audio extraction and video/subtitle export.
 - [AndroidX Media3](https://developer.android.com/jetpack/androidx/releases/media3) for video playback.
+- [LiteRT-LM](https://developers.google.com/edge/litert-lm/android) for running AI Shorts Editor which is basically Gemma42B model
 - Android foreground services for long-running generation, export, and download work.
 - Material Components for Android UI.
 
