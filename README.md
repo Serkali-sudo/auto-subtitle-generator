@@ -266,6 +266,7 @@ The app module uses:
 - [android-vad](https://github.com/gkonovalov/android-vad)
 - [ML Kit Translation](https://developers.google.com/ml-kit/language/translation)
 - [FFmpeg Kit](https://github.com/arthenica/ffmpeg-kit/tree/main/android)
+- [LiteRT-LM](https://developers.google.com/edge/litert-lm/android)
 - [AndroidX Media3](https://developer.android.com/jetpack/androidx/releases/media3)
 - [Material Components for Android](https://github.com/material-components/material-components-android)
 </content>
