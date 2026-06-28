@@ -118,6 +118,20 @@
                 android:orientation="horizontal">
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/queueCancelBT"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:contentDescription="Cancel"
+                android:text="Cancel"
+                android:textColor="?attr/colorError"
+                android:visibility="gone"
+                app:icon="@drawable/ri_close_line"
+                app:iconTint="?attr/colorError"
+                app:iconGravity="textStart"
+                app:iconPadding="4dp" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/queueExportVideoBT"
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="wrap_content"

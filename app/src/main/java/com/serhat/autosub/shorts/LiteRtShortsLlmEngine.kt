@@ -32,11 +32,15 @@ class LiteRtShortsLlmEngine(
     @Volatile private var conversation: Conversation? = null
     @Volatile private var backendLabel: String = "not-initialized"
     @Volatile private var thinkingEnabled: Boolean = false
+    private val cancelRequested = AtomicBoolean(false)
 
     private var maxContextTokens: Int = 8192
 
     override fun initialize(modelFile: File, maxContextTokens: Int) {
         this.maxContextTokens = maxContextTokens
+        // Reset here (not in generate) so a cancel requested during model load still aborts the
+        // first generation instead of being cleared. One analysis = one initialize + N chunk calls.
+        cancelRequested.set(false)
         val startedAt = System.currentTimeMillis()
         DebugLog.i(TAG, "Engine initialization started: fileBytes=${modelFile.length()}, " +
             "preferredBackend=${if (preferGpu) "GPU" else "CPU"}, maxContextTokens=$maxContextTokens")
@@ -103,6 +107,7 @@ class LiteRtShortsLlmEngine(
         val cancelledIntentionally = AtomicBoolean(false)
         val messageCount = AtomicInteger(0)
         val outputChars = AtomicInteger(0)
+        val lastActivityAt = AtomicLong(startedAt)
         val heartbeatCount = AtomicInteger(0)
         val initialProcessCpuMs = android.os.Process.getElapsedCpuTime()
         val lastProcessCpuMs = AtomicLong(initialProcessCpuMs)
@@ -160,6 +165,7 @@ class LiteRtShortsLlmEngine(
                         outputChars.set(length)
                         val callbacks = messageCount.incrementAndGet()
                         val now = System.currentTimeMillis()
+                        lastActivityAt.set(now)
                         if (firstTokenSeen.compareAndSet(false, true)) {
                             phase.set("generating output")
                             DebugLog.i(TAG, "First output token received after ${now - startedAt}ms (prefill complete)")
@@ -167,7 +173,10 @@ class LiteRtShortsLlmEngine(
                         if (now - lastProgressLogAt.get() >= 2_000 && lastProgressLogAt.compareAndSet(lastProgressLogAt.get(), now)) {
                             DebugLog.i(TAG, "Inference generating: elapsedMs=${now - startedAt}, callbacks=$callbacks, outputChars=$length")
                         }
-                        if (callbacks > 1200 || length > 5000) {
+                        // Thinking mode streams many tokens whose toString() is empty, so the callback
+                        // ceiling must be far higher when thinking is on or it false-positives as a loop.
+                        val callbackLimit = if (thinkingEnabled) 6000 else 1200
+                        if (callbacks > callbackLimit || length > 5000) {
                             if (cancelledIntentionally.compareAndSet(false, true)) {
                                 DebugLog.w(TAG, "Inference output limit exceeded (callbacks=$callbacks, chars=$length); cancelling process to prevent infinite loop.")
                                 current.cancelProcess()
@@ -197,11 +206,46 @@ class LiteRtShortsLlmEngine(
                 if (thinkingEnabled) mapOf("enable_thinking" to "true") else emptyMap(),
             )
             if (latch.count > 0 && !firstTokenSeen.get()) phase.set("native prefill / waiting for first token")
-            if (!latch.await(5, TimeUnit.MINUTES)) {
-                phase.set("timed out")
-                DebugLog.e(TAG, "Inference timed out after ${System.currentTimeMillis() - startedAt}ms")
-                current.cancelProcess()
-                throw IllegalStateException("Gemma response timed out")
+            // Thinking mode can stream tokens for many minutes before the visible answer, so a fixed
+            // wall-clock deadline is wrong. Allow a generous prefill window for the first token, then
+            // only abort if generation actually goes silent (a genuine hang), not just because it is slow.
+            val prefillTimeoutMs = 6 * 60_000L
+            val idleTimeoutMs = if (thinkingEnabled) 120_000L else 60_000L
+            // After a cancel we prefer the native cancel (already signalled in cancel()) to unwind
+            // cleanly through onError, and only force the stop if it does not take effect within the
+            // grace window. Tearing down a still-live native session is what previously crashed the app.
+            val cancelGraceMs = 12_000L
+            var cancelGraceStartedAt = 0L
+            while (!latch.await(1, TimeUnit.SECONDS)) {
+                val now = System.currentTimeMillis()
+                if (cancelRequested.get()) {
+                    if (cancelGraceStartedAt == 0L) {
+                        cancelGraceStartedAt = now
+                        phase.set("cancelling")
+                        DebugLog.i(TAG, "Cancel requested; waiting for native cancel to unwind")
+                    } else if (now - cancelGraceStartedAt >= cancelGraceMs) {
+                        phase.set("cancelled")
+                        DebugLog.w(TAG, "Native cancel did not unwind within ${cancelGraceMs}ms; forcing stop")
+                        throw IllegalStateException("Gemma analysis cancelled")
+                    }
+                    continue
+                }
+                if (!firstTokenSeen.get()) {
+                    if (now - startedAt >= prefillTimeoutMs) {
+                        phase.set("timed out")
+                        DebugLog.e(TAG, "Inference timed out during prefill after ${now - startedAt}ms (no first token)")
+                        current.cancelProcess()
+                        throw IllegalStateException("Gemma response timed out")
+                    }
+                } else {
+                    val idleMs = now - lastActivityAt.get()
+                    if (idleMs >= idleTimeoutMs) {
+                        phase.set("timed out")
+                        DebugLog.e(TAG, "Inference timed out after ${now - startedAt}ms (idleMs=$idleMs, no new tokens)")
+                        current.cancelProcess()
+                        throw IllegalStateException("Gemma response timed out")
+                    }
+                }
             }
             failure.get()?.let { throw it }
             return synchronized(result) { result.toString() }
@@ -212,7 +256,14 @@ class LiteRtShortsLlmEngine(
 
     override fun cancel() {
         DebugLog.i(TAG, "Inference cancellation requested")
-        conversation?.cancelProcess()
+        cancelRequested.set(true)
+        try {
+            conversation?.cancelProcess()
+        } catch (t: Throwable) {
+            // The conversation may already be finishing or torn down ("not alive"); the cancel flag
+            // still unwinds generate(). Never let a stray cancel tap crash the app.
+            DebugLog.w(TAG, "Native cancelProcess ignored: ${t.message}")
+        }
     }
 
     override fun close() {

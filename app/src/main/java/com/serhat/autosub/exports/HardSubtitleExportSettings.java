@@ -164,31 +164,31 @@ public final class HardSubtitleExportSettings {
         SharedPreferences saved = prefs(context);
         int resolutionIndex = indexOfResolution(resolutions, saved.getString(KEY_RESOLUTION, "source"));
         int fpsIndex = indexOfFps(frameRates, saved.getString(KEY_FPS, "source"));
-        int qualityIndex = indexOf(qualityValues, saved.getString(KEY_QUALITY, "balanced"));
+        int qualityIndex = indexOf(qualityValues, saved.getString(KEY_QUALITY, "original"));
         resolutionDropdown.setText(resolutionLabels.get(resolutionIndex), false);
         fpsDropdown.setText(fpsLabels.get(fpsIndex), false);
         qualityDropdown.setText(qualityLabels[qualityIndex], false);
         refreshCodecDropdown(context, resolutions.get(resolutionIndex), frameRates.get(fpsIndex), qualityValues[qualityIndex],
-                saved.getString(KEY_ENCODER, "mpeg4"), codecDropdown);
+                saved.getString(KEY_ENCODER, null), codecDropdown);
         resolutionDropdown.setOnItemClickListener((parent, selectedView, position, id) -> {
             int quality = Math.max(0, Arrays.asList(qualityLabels)
                     .indexOf(qualityDropdown.getText().toString()));
             int fps = Math.max(0, fpsLabels.indexOf(fpsDropdown.getText().toString()));
             refreshCodecDropdown(context, resolutions.get(position), frameRates.get(fps), qualityValues[quality],
-                    saved.getString(KEY_ENCODER, "mpeg4"), codecDropdown);
+                    saved.getString(KEY_ENCODER, null), codecDropdown);
         });
         fpsDropdown.setOnItemClickListener((parent, selectedView, position, id) -> {
             int resolution = Math.max(0, resolutionLabels.indexOf(resolutionDropdown.getText().toString()));
             int quality = Math.max(0, Arrays.asList(qualityLabels).indexOf(qualityDropdown.getText().toString()));
             refreshCodecDropdown(context, resolutions.get(resolution), frameRates.get(position),
-                    qualityValues[quality], saved.getString(KEY_ENCODER, "mpeg4"), codecDropdown);
+                    qualityValues[quality], saved.getString(KEY_ENCODER, null), codecDropdown);
         });
         qualityDropdown.setOnItemClickListener((parent, selectedView, position, id) -> {
             int resolution = Math.max(0, resolutionLabels
                     .indexOf(resolutionDropdown.getText().toString()));
             int fps = Math.max(0, fpsLabels.indexOf(fpsDropdown.getText().toString()));
             refreshCodecDropdown(context, resolutions.get(resolution), frameRates.get(fps), qualityValues[position],
-                    saved.getString(KEY_ENCODER, "mpeg4"), codecDropdown);
+                    saved.getString(KEY_ENCODER, null), codecDropdown);
         });
         sourceText.setText(sourceDescription(source));
 
@@ -226,8 +226,24 @@ public final class HardSubtitleExportSettings {
         List<String> encoders = deviceEncodersFor(resolution, fps, quality);
         List<String> labels = encoderLabels(encoders);
         setDropdown(context, codecDropdown, labels);
-        int selected = encoders.indexOf(preferredEncoder);
-        codecDropdown.setText(labels.get(selected >= 0 ? selected : 0), false);
+        int selected = preferredEncoderIndex(encoders, preferredEncoder);
+        codecDropdown.setText(labels.get(selected), false);
+    }
+
+    /**
+     * Honour the user's saved encoder when it is still available, otherwise default to the best
+     * supported codec: H.265, then H.264, then MPEG-4.
+     */
+    private static int preferredEncoderIndex(List<String> encoders, String preferredEncoder) {
+        if (preferredEncoder != null) {
+            int saved = encoders.indexOf(preferredEncoder);
+            if (saved >= 0) return saved;
+        }
+        for (String candidate : new String[]{"hevc_mediacodec", "h264_mediacodec", "mpeg4"}) {
+            int index = encoders.indexOf(candidate);
+            if (index >= 0) return index;
+        }
+        return 0;
     }
 
     private static List<String> encoderLabels(List<String> encoders) {
@@ -474,7 +490,7 @@ public final class HardSubtitleExportSettings {
     public static String videoEncodingArguments(Context context) {
         SharedPreferences prefs = prefs(context);
         String encoder = prefs.getString(KEY_ENCODER, "mpeg4");
-        String quality = prefs.getString(KEY_QUALITY, "balanced");
+        String quality = prefs.getString(KEY_QUALITY, "original");
         if ("libx264".equals(encoder) || "libx265".equals(encoder)) {
             int crf = "high".equals(quality) ? ("libx265".equals(encoder) ? 20 : 18)
                     : "compact".equals(quality) ? ("libx265".equals(encoder) ? 30 : 28)

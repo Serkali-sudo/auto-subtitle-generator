@@ -938,6 +938,50 @@ public class AutoSubTaskService extends Service {
         FFmpegKit.cancel();
     }
 
+    /**
+     * Cancel the work a specific queue item is running. Media operations are serialized, so the row
+     * the user taps is the one currently active; we dispatch on its status to stop the right piece of
+     * work and let that operation's own callbacks restore the row.
+     */
+    public void cancelQueueItem(QueueItem item) {
+        if (item == null) return;
+        switch (item.getStatus()) {
+            case ANALYZING_SHORTS:
+                // Signal the native cancel and show feedback; the analysis thread restores the item
+                // once the cancel actually unwinds, which is not always immediate.
+                item.setMessage("Cancelling…");
+                publishQueueItems(item);
+                cancelShortsAnalysis();
+                break;
+            case EXPORTING:
+                // Covers queue video export, talk-only/silence-removed export, and shorts montage;
+                // the FFmpeg cancel makes each export callback fire and reset the row.
+                if (currentState.getTaskType() == AutoSubTaskState.TaskType.SHORTS_EXPORT) {
+                    shortsExportCancelRequested = true;
+                }
+                subtitleGenerator.cancelGeneration();
+                FFmpegKit.cancel();
+                break;
+            case TRANSLATING:
+                subtitleGenerator.cancelGeneration();
+                FFmpegKit.cancel();
+                break;
+            case PROCESSING:
+                cancelCurrentQueueItem();
+                break;
+            case PENDING:
+                // Not started yet: mark it cancelled so the queue skips over it.
+                item.setStatus(QueueItem.Status.CANCELLED);
+                item.setMessage("Cancelled");
+                item.setProgress(0);
+                queueStore.updateItem(item);
+                publishQueueItems();
+                break;
+            default:
+                break;
+        }
+    }
+
     public void savePreviewSubtitles(List<SubtitleGenerator.SubtitleEntry> entries, String format, Uri videoUri,
                                      File outputDir, VoskModelInfo modelInfo,
                                      SubtitleGenerator.SubtitleSaveCallback callback) {

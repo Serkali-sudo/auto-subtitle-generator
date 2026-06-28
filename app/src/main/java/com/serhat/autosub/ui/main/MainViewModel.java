@@ -1667,6 +1667,19 @@ public class MainViewModel extends AndroidViewModel {
         return "Generating subtitles...";
     }
 
+    /** Cancel whatever work a specific queue item is running (subtitle generation, export,
+     * translation, or shorts analysis), so the user can stop it from the row instead of the
+     * notification or the general stop button. */
+    public void cancelQueueItem(QueueItem item) {
+        if (item == null) return;
+        if (useTaskService()) {
+            runWhenTaskServiceReady(false, () -> taskService.cancelQueueItem(item));
+            return;
+        }
+        // Without the service only the in-process subtitle generation path is available.
+        cancelCurrentQueueItem();
+    }
+
     public void cancelCurrentQueueItem() {
         if (useTaskService()) {
             runWhenTaskServiceReady(false, () -> taskService.cancelCurrentQueueItem());

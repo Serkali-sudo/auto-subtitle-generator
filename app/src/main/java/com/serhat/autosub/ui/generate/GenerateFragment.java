@@ -103,6 +103,11 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
             }
 
             @Override
+            public void onCancel(QueueItem item) {
+                viewModel.cancelQueueItem(item);
+            }
+
+            @Override
             public void onExportVideo(QueueItem item) {
                 quickExportVideo(item);
             }
@@ -255,6 +260,8 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
         android.content.SharedPreferences settingsPrefs = requireContext().getSharedPreferences("autosub_settings", android.content.Context.MODE_PRIVATE);
         boolean isWordByWord = settingsPrefs.getBoolean("shorts_mode_word_by_word", false);
         int savedWords = settingsPrefs.getInt("shorts_max_words_per_subtitle", 10);
+        // Default to GPU; the choice persists so it sticks once the user adjusts it.
+        dialogBinding.cpuSwitch.setChecked(settingsPrefs.getBoolean("shorts_prefer_cpu", false));
         dialogBinding.wordByWordSwitch.setChecked(isWordByWord);
         dialogBinding.wordsPerSubtitleSlider.setValue((float) savedWords);
         dialogBinding.wordsPerSubtitleLabel.setText("Maximum words per subtitle: " + savedWords);
@@ -277,6 +284,7 @@ public class GenerateFragment extends Fragment implements ActionMode.Callback {
         dialogBinding.startAnalysisButton.setOnClickListener(ignored -> {
             settingsPrefs.edit()
                     .putBoolean("shorts_mode_word_by_word", dialogBinding.wordByWordSwitch.isChecked())
+                    .putBoolean("shorts_prefer_cpu", dialogBinding.cpuSwitch.isChecked())
                     .putInt("shorts_max_words_per_subtitle", (int) dialogBinding.wordsPerSubtitleSlider.getValue())
                     .apply();
             analysisDialog.dismiss();

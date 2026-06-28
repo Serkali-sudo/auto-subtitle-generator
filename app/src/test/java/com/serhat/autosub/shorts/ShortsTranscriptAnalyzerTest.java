@@ -181,6 +181,42 @@ public class ShortsTranscriptAnalyzerTest {
         assertEquals(85, result.get(0).getScore());
     }
 
+    @Test public void recoversGemmaThinkingModeJsonWithMixedQuoteEscaping() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        // The exact malformed payload Gemma emitted in thinking mode: clips 1-3 wrap values in stray
+        // backslash-escaped/doubled quotes, while clip 4's title legitimately escapes quotes around
+        // "Obvious" - so no whole-document repair can make it valid JSON; field extraction must.
+        CapturingEngine engine = new CapturingEngine() {
+            @Override public String generate(String system, String prompt) {
+                calls.incrementAndGet();
+                return "```json {   \"clips\": [     {       \"ids\": [\\\"S23\\\",\\\"S55\\\"]\",       "
+                        + "\"title\":\\\"Father dies in tragic carriage accident\\\"\",       "
+                        + "\"hook\": \"\\\"A father and his son are rushing foolishly through the forest\\\"\",       "
+                        + "\"reason\": \"\\\"A father and his son are rushing foolishly through the forest\\\"\",       "
+                        + "\"score\":95     },     {      \"ids\": [\\\"S87\\\",\\\"S91\\\"],       "
+                        + "\"title\":\\\"Soldier claims to be the boy's mother\\\"\",       "
+                        + "\"hook\": \"\\\"Don't worry boy, I'll save you son.\\\"\",       "
+                        + "\"reason\": \"\\\"Don't worry boy I'll save you son.\\\"\",       "
+                        + "\"score\":98     },     {       \"ids\": [\\\"S53\\\",\\\"S64\\\"],       "
+                        + "\"title\": \"\\\"Obvious\\\" riddle solution reveals surprising twist\",       "
+                        + "\"hook\": \"\\\"It seemed pretty obvious. How is that obvious?\\\"\",       "
+                        + "\"reason\": \"\\\"It seemed pretty obvious. How is that obvious?\\\"\",       "
+                        + "\"score\":88     }   ] } ```";
+            }
+        };
+
+        List<ShortsCandidate> result = new ShortsTranscriptAnalyzer(engine).analyze(
+                new ShortsAnalysisRequest(1, transcript(100, "A useful sentence"), 5, 5, 60, ""), null);
+
+        // No expensive model re-prompt, and the well-formed clips are recovered with clean titles.
+        assertEquals(1, calls.get());
+        assertFalse(result.isEmpty());
+        List<String> titles = new ArrayList<>();
+        for (ShortsCandidate candidate : result) titles.add(candidate.getTitle());
+        assertTrue(titles.contains("Father dies in tragic carriage accident"));
+        assertTrue(titles.contains("Obvious riddle solution reveals surprising twist"));
+    }
+
     @Test public void allowsDurationWithinTolerance() throws Exception {
         ShortsLlmEngine engine = new CapturingEngine() {
             @Override public String generate(String system, String prompt) {

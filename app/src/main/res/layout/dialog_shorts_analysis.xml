@@ -160,7 +160,7 @@
             android:layout_height="wrap_content"
             android:paddingStart="16dp"
             android:paddingEnd="8dp"
-            android:text="Keeps the interface more responsive, but analysis is usually slower."
+            android:text="Keeps the interface more responsive and uses less battery, but analysis is usually slower. On some devices CPU can be faster."
             android:textColor="?android:attr/textColorSecondary" />
 
         <TextView

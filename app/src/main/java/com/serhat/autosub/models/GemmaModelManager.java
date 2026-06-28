@@ -17,7 +17,10 @@ public final class GemmaModelManager {
     public static final String DISPLAY_NAME = "Gemma 4 E2B (Shorts editor)";
     public static final String FILE_NAME = "gemma-4-E2B-it.litertlm";
     public static final long EXPECTED_SIZE = 2_588_147_712L;
-    public static final long MIN_TOTAL_MEMORY = 8L * 1024 * 1024 * 1024;
+    // ActivityManager.totalMem reports physical RAM minus kernel/GPU/radio carveouts, so an
+    // "8 GB" device typically reports ~7.2-7.7 GiB. Use 7 GiB so real 8 GB devices pass while
+    // 6 GB devices (which report ~5.5-5.7 GiB) are still flagged as low-memory.
+    public static final long MIN_TOTAL_MEMORY = 7L * 1024 * 1024 * 1024;
     private static final long STORAGE_HEADROOM = 512L * 1024 * 1024;
     private static final String URL = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/6e5c4f1e395deb959c494953478fa5cec4b8008f/gemma-4-E2B-it.litertlm?download=true";
 

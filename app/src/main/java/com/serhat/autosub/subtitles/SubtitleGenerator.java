@@ -433,6 +433,12 @@ public class SubtitleGenerator {
         }
     }
 
+    /** A cancelled FFmpeg session returns a cancel code, not success. Exports must treat that as a
+     * stop request and abort, never as an encoder failure that should retry the mpeg4 fallback. */
+    private static boolean wasCancelled(FFmpegSession session) {
+        return ReturnCode.isCancel(session.getReturnCode());
+    }
+
     public void generateSubtitles(Uri videoUri, String permanentAudioPath, SubtitleGenerationCallback callback) {
         executorService.execute(() -> {
             try {
@@ -1175,7 +1181,7 @@ public class SubtitleGenerator {
 
                 callback.onProgressUpdate(-1);
                 FFmpegSession session = FFmpegKit.execute(command);
-                if (burnSubtitles && !ReturnCode.isSuccess(session.getReturnCode())) {
+                if (burnSubtitles && !ReturnCode.isSuccess(session.getReturnCode()) && !wasCancelled(session)) {
                     String retryInputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri);
                     String fallbackFilter = (styledShorts || styledDouble)
                             ? "ass=" + subtitlePath : "subtitles=" + subtitlePath + ":force_style='FontName=" + fontName + "'";
@@ -1186,6 +1192,8 @@ public class SubtitleGenerator {
 
                 if (ReturnCode.isSuccess(session.getReturnCode())) {
                     callback.onVideoExported(outputPath);
+                } else if (wasCancelled(session)) {
+                    callback.onError("Export cancelled");
                 } else {
                     String errorMessage = session.getOutput() + "\n" + session.getLogsAsString();
                     DebugLog.e(TAG, "FFmpeg error: " + errorMessage);
@@ -1251,7 +1259,7 @@ public class SubtitleGenerator {
                         ? HardSubtitleExportSettings.videoEncodingArguments(context)
                         : "-c:v libx264 -preset veryfast -crf 20";
                 FFmpegSession session = FFmpegKit.execute(common + preferredEncoding + " '" + output.getAbsolutePath() + "'");
-                if (!ReturnCode.isSuccess(session.getReturnCode())) {
+                if (!ReturnCode.isSuccess(session.getReturnCode()) && !wasCancelled(session)) {
                     session = FFmpegKit.execute(common + "-c:v mpeg4 -q:v 2 '" + output.getAbsolutePath() + "'");
                 }
                 if (ReturnCode.isSuccess(session.getReturnCode())) {
@@ -1318,7 +1326,7 @@ public class SubtitleGenerator {
                         "\" -map \"[vout]\" -map \"[aout]\" -c:a aac -b:a 192k -movflags +faststart ";
                 FFmpegSession session = FFmpegKit.execute(common +
                         "-c:v libx264 -preset veryfast -crf 20 '" + output.getAbsolutePath() + "'");
-                if (!ReturnCode.isSuccess(session.getReturnCode())) {
+                if (!ReturnCode.isSuccess(session.getReturnCode()) && !wasCancelled(session)) {
                     session = FFmpegKit.execute(common +
                             "-c:v mpeg4 -q:v 2 '" + output.getAbsolutePath() + "'");
                 }
@@ -1516,9 +1524,13 @@ public class SubtitleGenerator {
                 "\" -map \"[vout]\" -map \"[aout]\" -c:a aac -b:a 192k -movflags +faststart ";
         FFmpegSession session = FFmpegKit.execute(common +
                 "-c:v libx264 -preset veryfast -crf 20 '" + plainOutput.getAbsolutePath() + "'");
-        if (!ReturnCode.isSuccess(session.getReturnCode())) {
+        if (!ReturnCode.isSuccess(session.getReturnCode()) && !wasCancelled(session)) {
             session = FFmpegKit.execute(common +
                     "-c:v mpeg4 -q:v 2 '" + plainOutput.getAbsolutePath() + "'");
+        }
+        if (wasCancelled(session)) {
+            callback.onError("Export cancelled");
+            return;
         }
         if (!ReturnCode.isSuccess(session.getReturnCode())) {
             callback.onError("Speech-only export failed: " + session.getLogsAsString());
@@ -1540,7 +1552,7 @@ public class SubtitleGenerator {
                         HardSubtitleExportSettings.videoFilterSuffix(context) + "\" " +
                         HardSubtitleExportSettings.videoEncodingArguments(context) +
                         " -c:a copy -movflags +faststart '" + output.getAbsolutePath() + "'");
-                if (!ReturnCode.isSuccess(session.getReturnCode())) {
+                if (!ReturnCode.isSuccess(session.getReturnCode()) && !wasCancelled(session)) {
                     session = FFmpegKit.execute("-y -i " + videoInput + " -vf \"subtitles='" +
                             escapeFilterPath(subtitleFile.getAbsolutePath()) + "'\" -c:v mpeg4 " +
                             "-q:v 2 -c:a copy '" + output.getAbsolutePath() + "'");

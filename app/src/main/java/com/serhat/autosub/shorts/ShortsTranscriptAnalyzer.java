@@ -16,6 +16,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class ShortsTranscriptAnalyzer {
     private static final String TAG = "AutoSubShorts";
@@ -283,17 +285,111 @@ public final class ShortsTranscriptAnalyzer {
     private static JsonArray extractClipArray(String response) {
         if (response == null) throw new IllegalArgumentException("Empty model response");
         String repaired = repairCommonJson(response);
-        int objectStart = repaired.indexOf('{');
-        int objectEnd = repaired.lastIndexOf('}');
+        JsonArray clips = tryParseClips(repaired);
+        if (clips != null) return clips;
+        // Gemma sometimes delimits values with literal backslash-escaped or doubled quotes
+        // (e.g. "ids":[\"S23\"]", "title":\"Father...\"", "hook":"\"A...\""), which is invalid
+        // JSON. As a last resort, strip those stray quotes from the raw response and run the normal
+        // repairs over the cleaned text before giving up. De-escaping first keeps repairCommonJson's
+        // comma heuristics from tripping over the bogus quotes. This path runs only after a normal
+        // parse fails, so well-formed responses are never altered.
+        JsonArray deEscaped = tryParseClips(repairCommonJson(repairEscapedQuotes(response)));
+        if (deEscaped != null) return deEscaped;
+        // Thinking-mode responses can interleave validly-escaped strings (e.g. a title containing
+        // \"quoted\" words) with stray-quoted ones, so no whole-document repair yields valid JSON.
+        // Fall back to extracting the fixed clip schema field-by-field, which tolerates any quoting.
+        JsonArray lenient = lenientClipArray(response);
+        if (lenient.size() > 0) return lenient;
+        // Re-run the array extraction so the thrown exception carries a useful parse message.
+        return JsonParser.parseString(extractJsonArray(repaired)).getAsJsonArray();
+    }
+
+    /** Last-resort recovery for thinking-mode responses whose quote escaping is too inconsistent for
+     * any whole-document repair. Pulls each clip object out and extracts the fixed schema per field. */
+    private static JsonArray lenientClipArray(String response) {
+        JsonArray clips = new JsonArray();
+        String body = response;
+        int clipsKey = body.indexOf("\"clips\"");
+        if (clipsKey >= 0) {
+            int bracket = body.indexOf('[', clipsKey);
+            if (bracket >= 0) body = body.substring(bracket + 1);
+        }
+        // Clip objects never nest, so a brace pair without inner braces matches exactly one clip.
+        Matcher objects = Pattern.compile("\\{[^{}]*\\}").matcher(body);
+        while (objects.find()) {
+            JsonObject clip = lenientClip(objects.group());
+            if (clip != null) clips.add(clip);
+        }
+        return clips;
+    }
+
+    private static JsonObject lenientClip(String chunk) {
+        JsonArray ids = new JsonArray();
+        int idsKey = chunk.indexOf("\"ids\"");
+        if (idsKey >= 0) {
+            int open = chunk.indexOf('[', idsKey);
+            int close = open >= 0 ? chunk.indexOf(']', open) : -1;
+            if (open >= 0 && close > open) {
+                Matcher labels = Pattern.compile("[Ss]?\\d+").matcher(chunk.substring(open + 1, close));
+                while (labels.find()) ids.add(labels.group());
+            }
+        }
+        if (ids.size() == 0) return null;
+        JsonObject clip = new JsonObject();
+        clip.add("ids", ids);
+        clip.addProperty("title", cleanLenientText(lenientField(chunk, "title")));
+        clip.addProperty("hook", cleanLenientText(lenientField(chunk, "hook")));
+        clip.addProperty("reason", cleanLenientText(lenientField(chunk, "reason")));
+        Matcher score = Pattern.compile("\"score\"\\s*:\\s*\"?(-?\\d+)").matcher(chunk);
+        if (score.find()) {
+            try { clip.addProperty("score", Integer.parseInt(score.group(1))); } catch (NumberFormatException ignored) { }
+        }
+        return clip;
+    }
+
+    /** The raw text of {@code key}'s value, terminated by the next known key or the object end. */
+    private static String lenientField(String chunk, String key) {
+        Matcher m = Pattern.compile("\"" + key + "\"\\s*:\\s*(.*?)\\s*(?:,\\s*\"(?:ids|title|hook|reason|score)\"\\s*:|\\}\\s*$)",
+                Pattern.DOTALL).matcher(chunk);
+        return m.find() ? m.group(1) : "";
+    }
+
+    private static String cleanLenientText(String raw) {
+        if (raw == null) return "";
+        // Unescape, drop residual backslashes, then strip every double quote: the quotes in these
+        // values are all escaping artifacts and the field is short display text.
+        return raw.replace("\\\"", "\"").replace("\\", "").replace("\"", "").trim();
+    }
+
+    /** Parse the clips array from {@code text}, preferring the object schema and falling back to a
+     * bare root array. Returns {@code null} when neither shape parses. */
+    private static JsonArray tryParseClips(String text) {
+        int objectStart = text.indexOf('{');
+        int objectEnd = text.lastIndexOf('}');
         if (objectStart >= 0 && objectEnd > objectStart) {
             try {
-                JsonObject root = JsonParser.parseString(repaired.substring(objectStart, objectEnd + 1)).getAsJsonObject();
+                JsonObject root = JsonParser.parseString(text.substring(objectStart, objectEnd + 1)).getAsJsonObject();
                 if (root.has("clips") && root.get("clips").isJsonArray()) return root.getAsJsonArray("clips");
             } catch (Exception ignored) {
                 // Fall through to the previous root-array format for compatibility.
             }
         }
-        return JsonParser.parseString(extractJsonArray(repaired)).getAsJsonArray();
+        try {
+            return JsonParser.parseString(extractJsonArray(text)).getAsJsonArray();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    static String repairEscapedQuotes(String response) {
+        if (response == null) return "";
+        // Unescape the stray backslash-quotes Gemma emits as value delimiters (\"S23\" -> "S23").
+        String result = response.replace("\\\"", "\"");
+        // Drop a stray quote left immediately after a closing array/brace (["S1","S2"]" -> ["S1","S2"]).
+        result = result.replaceAll("([\\]}])\\s*\"+\\s*(?=[,}\\]])", "$1");
+        // Collapse the doubled quotes the unescape leaves behind (accident"" -> accident", ""A -> "A).
+        result = result.replaceAll("\"{2,}", "\"");
+        return result;
     }
 
     static String repairCommonJson(String response) {

@@ -32,6 +32,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
     public interface QueueActionListener {
         void onRetry(QueueItem item);
         void onRemove(QueueItem item);
+        void onCancel(QueueItem item);
         void onExportVideo(QueueItem item);
         void onExportSubtitle(QueueItem item);
         void onShare(QueueItem item);
@@ -154,7 +155,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
     class QueueViewHolder extends RecyclerView.ViewHolder {
         TextView titleTV, statusTV, outputTV;
         LinearProgressIndicator progressIndicator;
-        MaterialButton retryBT, removeBT, exportVideoBT, exportSubtitleBT, shareBT, playBT,
+        MaterialButton retryBT, removeBT, cancelBT, exportVideoBT, exportSubtitleBT, shareBT, playBT,
                 createShortsBT, talkOnlyBT, silenceRemovedBT;
         android.widget.ImageView queueThumbIV;
         android.widget.ImageButton queueEditBT, queueTranslateBT;
@@ -169,6 +170,7 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             progressIndicator = itemView.findViewById(R.id.queueProgress);
             retryBT = itemView.findViewById(R.id.queueRetryBT);
             removeBT = itemView.findViewById(R.id.queueRemoveBT);
+            cancelBT = itemView.findViewById(R.id.queueCancelBT);
             exportVideoBT = itemView.findViewById(R.id.queueExportVideoBT);
             exportSubtitleBT = itemView.findViewById(R.id.queueExportSubtitleBT);
             shareBT = itemView.findViewById(R.id.queueShareBT);
@@ -213,7 +215,10 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             }
 
             retryBT.setVisibility(item.getStatus() == QueueItem.Status.FAILED || item.getStatus() == QueueItem.Status.CANCELLED ? View.VISIBLE : View.GONE);
-            
+
+            // Active work (subtitle generation, export, translation, shorts analysis) can be cancelled per item.
+            cancelBT.setVisibility(active && !selectionMode ? View.VISIBLE : View.GONE);
+
             boolean completed = item.getStatus() == QueueItem.Status.COMPLETED;
             exportVideoBT.setVisibility(completed && !selectionMode ? View.VISIBLE : View.GONE);
             exportSubtitleBT.setVisibility(completed && !selectionMode ? View.VISIBLE : View.GONE);
@@ -241,6 +246,9 @@ public class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueViewHol
             });
             removeBT.setOnClickListener(v -> {
                 if (listener != null) listener.onRemove(item);
+            });
+            cancelBT.setOnClickListener(v -> {
+                if (listener != null) listener.onCancel(item);
             });
             exportVideoBT.setOnClickListener(v -> {
                 if (listener != null) listener.onExportVideo(item);
